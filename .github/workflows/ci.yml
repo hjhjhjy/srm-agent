@@ -37,6 +37,6 @@ jobs:
       - name: Test
         run: pytest -v --tb=short
 
-      # M3 接入：检索/Agent 指标下滑超过阈值即阻断合并
-      # - name: Eval gate
-      #   run: python -m tests.eval_runner --fail-under 0.85
+      # 检索/Agent 评测门禁：20 题离线评测，检索/回答/引用/附录四项准确率达标才放行
+      - name: Eval gate
+        run: python -m app.rag.eval --fail-under 0.85
