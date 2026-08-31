@@ -1,0 +1,22 @@
+[
+  {"question": "如何注册成为青山利康供应商？", "expected_flow_codes": ["QS_SRM_SM_0001"], "expected_keywords": ["公开注册", "邀请注册", "代注册"]},
+  {"question": "注册需要提交哪些文件？", "expected_flow_codes": ["QS_SRM_SM_0001"], "expected_keywords": ["营业执照", "身份证"], "expected_appendix": "form"},
+  {"question": "资质准入需要准备哪些材料？", "expected_flow_codes": ["QS_SRM_SM_0002"], "expected_keywords": ["资质清单", "阳光协议", "保密协议", "质量协议"], "expected_appendix": "form"},
+  {"question": "收到整改通知（QS_SRM_QM_0001）怎么办？", "expected_flow_codes": ["QS_SRM_QM_0001"], "expected_keywords": ["整改", "回复", "整改报告"], "expected_appendix": "warning"},
+  {"question": "我的资质快到期了怎么处理？", "expected_flow_codes": ["QS_SRM_SM_0002"], "expected_keywords": ["60天", "到期"], "expected_appendix": "warning"},
+  {"question": "物料价格即将到期（提前30天）怎么处理？", "expected_flow_codes": ["QS_SRM_MD_0004"], "expected_keywords": ["30天", "价格", "洽谈"], "expected_appendix": "warning"},
+  {"question": "收到询价单如何报价？", "expected_flow_codes": ["QS_SRM_SC_0001"], "expected_keywords": ["询价", "报价"]},
+  {"question": "竞价和招标怎么参与？", "expected_flow_codes": ["QS_SRM_SC_0002", "QS_SRM_SC_0003"], "expected_keywords": ["竞价", "招标", "投标"]},
+  {"question": "收到合同单如何查收与签署？", "expected_flow_codes": ["QS_SRM_CM_0002"], "expected_keywords": ["合同", "查收", "签署", "盖章"], "expected_appendix": "message"},
+  {"question": "采购订单怎么接收、确认、发货、退货？", "expected_flow_codes": ["QS_SRM_PO_0003", "QS_SRM_PO_0008", "QS_SRM_PO_0010"], "expected_keywords": ["订单", "确认", "发货", "退货"], "expected_appendix": "warning"},
+  {"question": "如何发起对账、上传发票？", "expected_flow_codes": ["QS_SRM_RM_0003"], "expected_keywords": ["对账", "发票", "确认"], "expected_appendix": "message"},
+  {"question": "收到赔偿金单或附加费用单怎么处理？", "expected_flow_codes": ["QS_SRM_RM_0001", "QS_SRM_RM_0002"], "expected_keywords": ["赔偿金", "附加费用", "确认"]},
+  {"question": "我的付款进度在哪里查？", "expected_flow_codes": ["QS_SRM_RM_0005"], "expected_keywords": ["付款", "进度", "报表"], "expected_appendix": "report"},
+  {"question": "我的绩效考核在哪里查看？", "expected_flow_codes": ["QS_SRM_SM_0010"], "expected_keywords": ["绩效", "考核", "报表"], "expected_appendix": "report"},
+  {"question": "SRM系统中有哪些报表可以查？", "expected_flow_codes": [], "expected_keywords": ["报表"], "expected_appendix": "report"},
+  {"question": "物料主数据是通过什么接口从 BIP 同步到 SRM 的？", "expected_flow_codes": ["QS_SRM_MD_0002"], "expected_keywords": ["物料主数据", "BIP", "接口"], "expected_appendix": "interface"},
+  {"question": "系统里“消息”和“预警”有什么区别？", "expected_flow_codes": [], "expected_keywords": ["预警"], "expected_appendix": ""},
+  {"question": "样品确认流程是怎样的？", "expected_flow_codes": ["QS_SRM_SM_0003", "QS_SRM_SM_0004", "QS_SRM_SM_0005"], "expected_keywords": ["样品", "小试", "中试"]},
+  {"question": "收到工程变更单（ECN）怎么处理？", "expected_flow_codes": ["QS_SRM_RD_0001"], "expected_keywords": ["ECN", "工程变更", "查看"]},
+  {"question": "什么是商品首营？", "expected_flow_codes": ["QS_SRM_MD_0003"], "expected_keywords": ["首营", "商品"]}
+]
