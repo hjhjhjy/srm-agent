@@ -17,10 +17,8 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Optional
 
-from app.rag.backend import RetrievalBackend, get_backend
-from app.rag.backend import KBHit
+from app.rag.backend import KBHit, RetrievalBackend, get_backend
 
 FLOW_RE = re.compile(r"QS_SRM_[A-Z0-9_]+", re.IGNORECASE)
 _Q_DIR = Path(__file__).resolve().parent / "data"
@@ -137,7 +135,7 @@ def eval_question(item: dict, backend: RetrievalBackend, top_k: int = TOP_K) -> 
     }
 
 
-def run_eval(backend: Optional[RetrievalBackend] = None, top_k: int = TOP_K, fail_under: Optional[float] = None) -> dict:
+def run_eval(backend: RetrievalBackend | None = None, top_k: int = TOP_K, fail_under: float | None = None) -> dict:
     backend = backend or get_backend()
     questions = load_questions()
     rows = [eval_question(it, backend, top_k) for it in questions]
