@@ -15,7 +15,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+from functools import lru_cache
+
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+
+from app.observability.tracing import get_tenant
 
 # ── HTTP ──────────────────────────────────────────────────────────────
 REQUEST_COUNT = Counter(
@@ -56,6 +62,76 @@ SECURITY_PII_MASKED = Counter(
     "srm_security_pii_masked_total", "被脱敏的 PII 项数", ["type"]
 )
 
+# ── 成本归因（M3 FinOps）─────────────────────────────────────────────────
+# 企业最先追问的就是「一个月烧多少钱」。本组指标把 LLM token 消耗换算成美元，并
+# 按 (租户, 模型) 归因，便于定位「是哪个租户 / 哪个模型在烧钱」，支撑配额与预算熔断。
+# 注意：这是成本**归因展示**，不是计费系统；定价为常见公开价，可经环境变量覆盖。
+LLM_COST = Counter(
+    "srm_llm_cost_total_usd", "LLM 累计成本(美元)，按租户/模型归因", ["tenant", "model"]
+)
+
+# 默认模型定价：美元 / 1K token（in=输入, out=输出）。覆盖常见国产/海外模型；
+# 命中不到的模型走 "default"。可用 SRM_MODEL_PRICING 以 JSON 覆盖，例如：
+#   {"deepseek-chat": {"in": 0.00027, "out": 0.0011}}
+_DEFAULT_PRICING: dict[str, dict[str, float]] = {
+    "deepseek-chat": {"in": 0.00027, "out": 0.0011},
+    "deepseek-reasoner": {"in": 0.00055, "out": 0.00219},
+    "gpt-4o-mini": {"in": 0.00015, "out": 0.0006},
+    "gpt-4o": {"in": 0.005, "out": 0.015},
+    "qwen-plus": {"in": 0.0004, "out": 0.0004},
+    "qwen-max": {"in": 0.0016, "out": 0.004},
+    "default": {"in": 0.001, "out": 0.002},
+}
+
+
+@lru_cache(maxsize=1)
+def _pricing_table() -> dict[str, dict[str, float]]:
+    """返回定价表；优先读取环境变量 SRM_MODEL_PRICING 覆盖默认值。"""
+    table = dict(_DEFAULT_PRICING)
+    raw = os.getenv("SRM_MODEL_PRICING")
+    if raw:
+        try:
+            override = json.loads(raw)
+            if isinstance(override, dict):
+                for k, v in override.items():
+                    if isinstance(v, dict) and "in" in v and "out" in v:
+                        table[k] = {"in": float(v["in"]), "out": float(v["out"])}
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    return table
+
+
+def _pricing_for(model: str) -> dict[str, float]:
+    table = _pricing_table()
+    return table.get(model) or table["default"]
+
+
+def record_llm_cost(
+    tenant: str, model: str, prompt_tokens: int, completion_tokens: int
+) -> float:
+    """按 (租户, 模型) 累加 LLM 成本（美元）。返回本次成本，供调用方回显。"""
+    price = _pricing_for(model)
+    cost = (prompt_tokens / 1000.0) * price["in"] + (completion_tokens / 1000.0) * price["out"]
+    if cost:
+        LLM_COST.labels(tenant=tenant or "unknown", model=model or "unknown").inc(cost)
+    return cost
+
+
+def cost_summary() -> dict[str, float]:
+    """返回各 (tenant,model) 维度的累计成本（测试 / 调试 / 管理面板用）。
+
+    注意：prometheus_client 的 Counter 在 ``collect()`` 时除了真实计数值，
+    还会附带一个 ``<name>_created`` 的时间戳样本，需排除，否则会混入创建时间戳。
+    """
+    out: dict[str, float] = {}
+    for metric in LLM_COST.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_created"):
+                continue
+            key = f"{sample.labels.get('tenant', 'unknown')}/{sample.labels.get('model', 'unknown')}"
+            out[key] = out.get(key, 0.0) + sample.value
+    return out
+
 
 # ── 打点辅助 ──────────────────────────────────────────────────────────
 
@@ -66,7 +142,13 @@ def record_http(method: str, endpoint: str, status: int, duration_s: float) -> N
 
 
 def record_llm(
-    model: str, tokens: int, duration_s: float, error: bool = False, phase: str | None = None
+    model: str,
+    tokens: int,
+    duration_s: float,
+    error: bool = False,
+    phase: str | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
 ) -> None:
     model = model or "unknown"
     phase = phase or "unknown"
@@ -77,6 +159,10 @@ def record_llm(
         LLM_LATENCY.labels(model=model, phase=phase).observe(duration_s)
     if error:
         LLM_ERRORS.labels(model=model, phase=phase).inc()
+    # 成本归因：按当前租户上下文（中间件注入）把 token 换算为美元。
+    # 错误调用通常无 token 消耗，这里仍记录以便排查，但金额为 0。
+    if prompt_tokens or completion_tokens:
+        record_llm_cost(get_tenant(), model, prompt_tokens, completion_tokens)
 
 
 def record_tool(name: str, ok: bool, duration_s: float) -> None:

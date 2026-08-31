@@ -32,6 +32,11 @@ trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("srm_t
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("srm_request_id", default=None)
 _current_span_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("srm_span", default=None)
 
+# 租户 / 用户上下文：用于成本归因（FinOps）与审计。由请求中间件在鉴权后注入，
+# 使整条调用链（节点 span、工具、LLM）都能读到当前租户，无需层层透传参数。
+tenant_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("srm_tenant", default=None)
+user_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("srm_user", default=None)
+
 _MAX_SPANS = 500
 _spans: list[Span] = []
 
@@ -74,6 +79,27 @@ def ensure_trace_id() -> str:
         tid = request_id_var.get() or new_id()
         trace_id_var.set(tid)
     return tid
+
+
+def set_identity(tenant: str | None, user: str | None = None) -> None:
+    """注入当前请求的身份（租户 / 用户），供成本归因与审计读取。"""
+    tenant_var.set(tenant)
+    user_var.set(user)
+
+
+def get_tenant() -> str:
+    """当前租户；未注入时返回 'unknown'（成本归因的兜底维度）。"""
+    return tenant_var.get() or "unknown"
+
+
+def get_user() -> str:
+    return user_var.get() or "unknown"
+
+
+def reset_identity() -> None:
+    """测试 / 请求结束时清理身份上下文。"""
+    tenant_var.set(None)
+    user_var.set(None)
 
 
 @dataclass

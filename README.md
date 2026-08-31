@@ -157,18 +157,19 @@ pytest -v
 | | v1 `srm-rag` | v2 `srm-agent` |
 |---|---|---|
 | 定位 | 检索质量深度 | 工程完备度 |
-| 检索 | BGE + BM25 + RRF + 重排 | M1 内存 BM25，**接口预留** M2 接入 v1 稠密检索 |
-| 状态 | 活跃维护 | 新建，M1 进行中 |
+| 检索 | BGE + BM25 + RRF + 重排 | BGE 稠密 + BM25 + RRF 融合（默认 BGE，离线/CI 自动回退 hash） |
+| 状态 | 活跃维护 | 新建，M2 已完成 BGE 接入 |
 
-v1 的稠密检索将在 M2 通过 `set_backend()` 接入，**接口不变**——这正是抽象层的价值。
+v1 的稠密检索已通过 `get_embedder()` 工厂接入真实 BGE（`app/rag/embeddings.py`），
+离线/CI 无 `sentence_transformers` 时自动回退 `OfflineHashEmbedder`，**接口不变**——这正是抽象层的价值。
 
 ## 路线图
 
 - [x] **M1** 状态图 + 工具中心 + HITL 审批 + 幂等 + 审计 + 护栏 + 租户隔离
 - [x] **M2-Phase1** 治理收口：审批回调鉴权 · 凭据移出代码(JWT/环境变量) · 审计落盘+approver · 基础限流 · 知识库 seeding · 文档/代码矛盾消除
-- [ ] **M2-Phase2+** 接入 v1 稠密检索 · 工具级授权细化 · 可观测性(OTel) · 记忆
-- [ ] **M3** OpenTelemetry 链路追踪 · 成本归因 · 评测门禁入 CI
-- [ ] **M4** 四层记忆 · 状态检查点 · 合规策略
+- [x] **M2-Phase2** 接入 v1 稠密检索（BGE 替换离线 hash 嵌入器）· 可观测性（OTel 链路追踪 + 成本归因 FinOps）· 评测门禁入 CI
+- [x] **M3** 记忆与 LLM 硬化（Phase4）· 安全纵深 Prompt 注入/PII/外部隔离（Phase5）· BGE 嵌入器生产化
+- [ ] **M4** 四层记忆 · 状态检查点 · 合规策略 · 工具级授权细化
 - [ ] **M5** Helm + CI/CD + 金丝雀 + SLO
 - [ ] **M6** MCP 协议 · Prompt A/B · 知识版本化
 

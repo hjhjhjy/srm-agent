@@ -35,6 +35,9 @@ class LLMResponse(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tokens: int = 0
+    # 输入/输出 token 拆分：用于成本归因（FinOps）。未显式给出时由调用方估算。
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     model: str = "scripted"
 
 
@@ -70,8 +73,21 @@ class ScriptedLLM:
                 resp = LLMResponse(content=item, tokens=max(1, len(item) // 2), model="scripted")
             else:
                 resp = item
+        # 离线无真实 usage，按消息体积做一个确定性拆分用于成本归因：
+        # 输入 ≈ 全部消息内容长度，输出 ≈ 本次生成内容长度。
+        prompt_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 2
+        completion_tokens = resp.tokens
+        # 把拆分写回响应对象，供调用方 / 审计直接读取
+        resp.prompt_tokens = prompt_tokens
+        resp.completion_tokens = completion_tokens
         metrics.record_llm(
-            resp.model or "scripted", resp.tokens, time.time() - t0, error=False, phase=phase
+            resp.model or "scripted",
+            resp.tokens,
+            time.time() - t0,
+            error=False,
+            phase=phase,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
         return resp
 
@@ -141,7 +157,13 @@ class OpenAICompatLLM:
             else:
                 raise
         metrics.record_llm(
-            resp.model or self.model or "unknown", resp.tokens, time.time() - t0, error=False, phase=phase
+            resp.model or self.model or "unknown",
+            resp.tokens,
+            time.time() - t0,
+            error=False,
+            phase=phase,
+            prompt_tokens=resp.prompt_tokens,
+            completion_tokens=resp.completion_tokens,
         )
         return resp
 
@@ -181,10 +203,14 @@ class OpenAICompatLLM:
             for tc in (msg.get("tool_calls") or [])
         ]
         usage = data.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
         return LLMResponse(
             content=msg.get("content") or "",
             tool_calls=calls,
             tokens=int(usage.get("total_tokens") or 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             model=model,
         )
 

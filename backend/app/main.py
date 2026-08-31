@@ -38,7 +38,12 @@ from app.core import config as app_config
 from app.core.jwt import verify_jwt
 from app.observability import metrics as prom_metrics
 from app.observability.audit import audit_store
-from app.observability.tracing import get_request_id, new_id, set_request_id
+from app.observability.tracing import (
+    get_request_id,
+    new_id,
+    set_identity,
+    set_request_id,
+)
 from app.security.sanitize import mask_pii, mask_pii_in_answer
 
 try:
@@ -247,6 +252,7 @@ async def export_audit(identity: Identity = Depends(current_identity)):
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, identity: Identity = Depends(current_identity)):
+    set_identity(identity.tenant_id, identity.user_id)
     graph = get_app()
     state = initial_state(
         req.question,
@@ -277,6 +283,7 @@ async def chat_stream(req: ChatRequest, identity: Identity = Depends(current_ide
         budget=Budget(),
     )
     config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
+    set_identity(identity.tenant_id, identity.user_id)
     logger.info("收到流式提问 tenant=%s q=%s", identity.tenant_id, _masked(req.question))
 
     async def gen():
@@ -305,6 +312,7 @@ async def resume_approval(req: ApprovalRequest, identity: Identity = Depends(cur
     require_scope(identity, "approval:review")
     if Command is None:
         raise HTTPException(status_code=501, detail="当前 langgraph 版本不支持 interrupt 恢复")
+    set_identity(identity.tenant_id, identity.user_id)
     graph = get_app()
     config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
     reviewer = req.reviewer or identity.user_id
