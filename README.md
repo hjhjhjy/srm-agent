@@ -60,12 +60,14 @@ START → router ─┬───────────────────
 
 ### 2. HITL 审批门（写操作必须过人）
 
-四级决策优先级，**拿不到人工决策时默认拒绝**（fail-closed）：
+三级决策优先级，**拿不到人工决策时默认拒绝**（fail-closed）：
 
 1. 持有 `approval:auto` scope → 策略自动放行（内部可信账号）
-2. LangGraph `interrupt` → 挂起等待人工
-3. 状态预设 → 外部审批系统回调
-4. 以上都不满足 → **拒绝**
+2. LangGraph `interrupt` 可用 → 挂起等待人工，恢复时记录审批人
+3. 以上都不满足（无 interrupt 能力且非可信账号）→ **拒绝**
+
+> 不存在「外部审批系统回调预设」这一独立分支：无 interrupt 能力时无法可靠挂起，
+> 此时直接 fail-closed 比「放行」更安全。
 
 ### 3. 幂等性（写操作的生命线）
 
@@ -116,29 +118,29 @@ uvicorn app.main:app --reload
 
 打开 http://localhost:8000/docs
 
-演示凭据（M1 静态 Key，M2 替换为 JWT）：
+鉴权（**凭据不再硬编码**，见 `app/core/config.py`）：
 
-| Key | 权限 |
-|---|---|
-| `dev-supplier-key` | 知识检索 + 订单查询 + 建工单（需审批） |
-| `dev-readonly-key` | 仅只读，看不到写工具 |
-| `dev-admin-key` | 全部权限 + `approval:auto`（工单免审批） |
+- 生产：设置 `SRM_JWT_SECRET`，用 `Authorization: Bearer <jwt>` 鉴权（JWT 由你的 IdP 签发）。
+- 本地演示：设置环境变量 `SRM_DEV_API_KEY`（任意字符串），请求带 `X-API-Key`；
+  若两者都未设置，启动期会自动生成一个**仅本进程有效**的临时 dev key 并打印到日志。
+- 默认 dev 身份：租户 `qlk`、用户 `SUP001`、scopes `kb:read,order:read,ticket:write,calc:use,approval:review`。
+- 审批回调 `/api/approvals/resume` **必须**携带 `approval:review` scope，否则 403。
 
 ```bash
 # 知识问答
 curl -X POST http://localhost:8000/api/chat \
-  -H "X-API-Key: dev-supplier-key" -H "Content-Type: application/json" \
+  -H "X-API-Key: <你的dev key>" -H "Content-Type: application/json" \
   -d '{"question":"如何注册成为青山利康供应商？","session_id":"demo-1"}'
 
 # 写操作 → 返回 pending_approval，等待人工审批
 curl -X POST http://localhost:8000/api/chat \
-  -H "X-API-Key: dev-supplier-key" -H "Content-Type: application/json" \
+  -H "X-API-Key: <你的dev key>" -H "Content-Type: application/json" \
   -d '{"question":"帮我建个工单，对账金额对不上","session_id":"demo-2"}'
 
-# 人工批准
+# 人工批准（用 session_id，thread_id 由服务端派生；审批人取自身份，不信任客户端自填）
 curl -X POST http://localhost:8000/api/approvals/resume \
-  -H "Content-Type: application/json" \
-  -d '{"thread_id":"demo-2","approved":true,"reviewer":"buyer01"}'
+  -H "X-API-Key: <你的dev key>" -H "Content-Type: application/json" \
+  -d '{"session_id":"demo-2","approved":true}'
 ```
 
 ## 测试
@@ -163,7 +165,8 @@ v1 的稠密检索将在 M2 通过 `set_backend()` 接入，**接口不变**—�
 ## 路线图
 
 - [x] **M1** 状态图 + 工具中心 + HITL 审批 + 幂等 + 审计 + 护栏 + 租户隔离
-- [ ] **M2** 接入 v1 稠密检索 · 工具级授权下沉 · 密钥改造
+- [x] **M2-Phase1** 治理收口：审批回调鉴权 · 凭据移出代码(JWT/环境变量) · 审计落盘+approver · 基础限流 · 知识库 seeding · 文档/代码矛盾消除
+- [ ] **M2-Phase2+** 接入 v1 稠密检索 · 工具级授权细化 · 可观测性(OTel) · 记忆
 - [ ] **M3** OpenTelemetry 链路追踪 · 成本归因 · 评测门禁入 CI
 - [ ] **M4** 四层记忆 · 状态检查点 · 合规策略
 - [ ] **M5** Helm + CI/CD + 金丝雀 + SLO
