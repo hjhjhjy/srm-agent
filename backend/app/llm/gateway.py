@@ -15,9 +15,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional, Protocol
+import time
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
+
+from app.observability import metrics
 
 logger = logging.getLogger("srm.llm")
 
@@ -38,14 +41,14 @@ class BaseLLM(Protocol):
     async def achat(
         self,
         messages: list[dict[str, Any]],
-        tools: Optional[list[dict[str, Any]]] = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse: ...
 
 
 class ScriptedLLM:
     """按预置脚本返回响应 —— 单元测试与 CI 的确定性保障。"""
 
-    def __init__(self, responses: Optional[list[LLMResponse | str]] = None):
+    def __init__(self, responses: list[LLMResponse | str] | None = None):
         self._queue: list[LLMResponse | str] = list(responses or [])
         self.calls: list[dict[str, Any]] = []
 
@@ -54,12 +57,17 @@ class ScriptedLLM:
 
     async def achat(self, messages, tools=None) -> LLMResponse:
         self.calls.append({"messages": messages, "tools": tools})
+        t0 = time.time()
         if not self._queue:
-            return LLMResponse(content="", model="scripted")
-        item = self._queue.pop(0)
-        if isinstance(item, str):
-            return LLMResponse(content=item, tokens=max(1, len(item) // 2), model="scripted")
-        return item
+            resp = LLMResponse(content="", model="scripted")
+        else:
+            item = self._queue.pop(0)
+            if isinstance(item, str):
+                resp = LLMResponse(content=item, tokens=max(1, len(item) // 2), model="scripted")
+            else:
+                resp = item
+        metrics.record_llm(resp.model or "scripted", resp.tokens, time.time() - t0, error=False)
+        return resp
 
 
 class OpenAICompatLLM:
@@ -70,12 +78,12 @@ class OpenAICompatLLM:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        secondary_base_url: Optional[str] = None,
-        secondary_api_key: Optional[str] = None,
-        secondary_model: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        secondary_base_url: str | None = None,
+        secondary_api_key: str | None = None,
+        secondary_model: str | None = None,
     ):
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
         self.api_key = api_key or os.getenv("LLM_API_KEY", "")
@@ -91,20 +99,31 @@ class OpenAICompatLLM:
 
     async def achat(self, messages, tools=None) -> LLMResponse:
         if not self.available:
+            metrics.record_llm("unavailable", 0, 0.0, error=True)
             raise RuntimeError("未配置 LLM_API_KEY")
+        t0 = time.time()
         try:
-            return await self._call(messages, tools, self.base_url, self.api_key, self.model)
+            resp = await self._call(messages, tools, self.base_url, self.api_key, self.model)
         except Exception as exc:
+            metrics.record_llm(self.model, 0, time.time() - t0, error=True)
             logger.warning("主模型调用失败，尝试备用模型: %s", exc)
             if self.secondary_base_url and self.secondary_api_key and self.secondary_model:
-                return await self._call(
-                    messages,
-                    tools,
-                    self.secondary_base_url,
-                    self.secondary_api_key,
-                    self.secondary_model,
-                )
-            raise
+                t1 = time.time()
+                try:
+                    resp = await self._call(
+                        messages,
+                        tools,
+                        self.secondary_base_url,
+                        self.secondary_api_key,
+                        self.secondary_model,
+                    )
+                except Exception:
+                    metrics.record_llm(self.secondary_model, 0, time.time() - t1, error=True)
+                    raise
+            else:
+                raise
+        metrics.record_llm(resp.model or self.model, resp.tokens, time.time() - t0, error=False)
+        return resp
 
     async def _call(self, messages, tools, base_url, api_key, model) -> LLMResponse:
         import httpx  # 延迟导入，避免离线环境强制依赖
