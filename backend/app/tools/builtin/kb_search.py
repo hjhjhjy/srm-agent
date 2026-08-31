@@ -4,8 +4,6 @@
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 from app.rag.backend import get_backend
@@ -19,7 +17,7 @@ class KBSearchArgs(BaseModel):
         description="用于检索的规范表述，保留流程码、表单名、资质/对账/订单等关键实体",
     )
     top_k: int = Field(4, ge=1, le=10, description="返回片段数量")
-    flow_code: Optional[str] = Field(
+    flow_code: str | None = Field(
         None, description="限定流程码，如 QS_SRM_QM_0001；不确定时留空"
     )
 
