@@ -10,7 +10,6 @@ from app.llm.gateway import ScriptedLLM, set_llm
 from app.rag.backend import InMemoryBM25Backend, KBHit, set_backend
 from app.tools.builtin.ticket_create import reset_idempotency_store
 
-
 DEMO_CHUNKS: list[KBHit] = [
     KBHit(
         chunk_id="c1",
