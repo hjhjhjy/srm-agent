@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from typing import Any
 
 
 def _get_list(name: str, default: str) -> list[str]:
