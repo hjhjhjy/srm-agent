@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Iterable
 
@@ -19,7 +20,7 @@ from app.rag.backend import (
     KBHit,
     RetrievalBackend,
 )
-from app.rag.embeddings import Embedder, OfflineHashEmbedder
+from app.rag.embeddings import Embedder, get_embedder
 
 logger = logging.getLogger("srm.hybrid")
 
@@ -52,20 +53,25 @@ class HybridBackend(RetrievalBackend):
         k1: float = 1.5,
         b: float = 0.75,
         rrf_k: int = 60,
-        dense_weight: float = 0.35,
+        dense_weight: float | None = None,
         boost_appendix_intent: float = 0.02,
         boost_appendix_flow: float = 0.02,
         mmr_lambda: float = 0.55,
     ) -> None:
         self._bm25 = InMemoryBM25Backend(k1=k1, b=b)
-        self._embedder = embedder or OfflineHashEmbedder()
+        self._embedder = embedder or get_embedder()
         self._hits: list[KBHit] = []
         self._vecs: list[list[float]] = []
         self._by_id: dict[str, int] = {}
         self._rrf_k = rrf_k
-        # 稠密路权重：离线 hash embedder 语义噪声较大，作为「语义纠偏」而非主信号，
-        # 主信号交给 BM25（中文关键词精准），避免泛化 chunk 在稠密路霸榜。
-        self._dense_weight = dense_weight
+        # 稠密路权重：BM25 为主信号（中文关键词精准），稠密路作语义补充。
+        # 离线默认 OfflineHashEmbedder 语义噪声较大，故默认 0.35；启用 BGE 等高质量
+        # 稠密向量后可经 SRM_DENSE_WEIGHT 上调（如 0.5~0.6）以充分利用语义召回。
+        self._dense_weight = (
+            dense_weight
+            if dense_weight is not None
+            else float(os.getenv("SRM_DENSE_WEIGHT", "0.35"))
+        )
         self._boost_app_intent = boost_appendix_intent
         self._boost_app_flow = boost_appendix_flow
         # MMR 多样性：抑制与已选 chunk 高度相似的冗余项，给特定 subflow 留出位置。
@@ -103,7 +109,7 @@ class HybridBackend(RetrievalBackend):
         bm25_rank = {h.chunk_id: r for r, h in enumerate(bm25_hits)}
 
         # ── 稠密路 ──
-        q_vec = self._embedder.embed([query])[0]
+        q_vec = self._embedder.embed_query(query)
         dense: list[tuple[int, float]] = []
         for i, hit in enumerate(self._hits):
             if not self._tenant_ok(hit, tenant_id):

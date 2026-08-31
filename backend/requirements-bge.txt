@@ -1,0 +1,13 @@
+# 生产稠密向量（语义召回）依赖 —— 可选，离线 / CI 默认不安装。
+#
+# 启用方式：
+#   pip install -r requirements-bge.txt
+#   export SRM_EMBEDDER=bge        # 或保持默认 auto（检测到则自动启用）
+#   export SRM_BGE_MODEL=BAAI/bge-large-zh-v1.5
+#
+# 说明：
+# - sentence-transformers 会按需拉取 torch / transformers / huggingface-hub 等。
+# - 首次运行会从 HuggingFace 下载模型权重；国内网络建议先设置镜像：
+#   export HF_ENDPOINT=https://hf-mirror.com
+# - 未安装此依赖时，检索后端自动回退到确定性的 OfflineHashEmbedder，离线 / CI 仍可跑。
+sentence-transformers>=2.3
