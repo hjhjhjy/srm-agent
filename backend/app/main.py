@@ -25,10 +25,10 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -36,19 +36,35 @@ from app.agent.graph import build_app
 from app.agent.state import Budget, initial_state
 from app.core import config as app_config
 from app.core.jwt import verify_jwt
+from app.observability import metrics as prom_metrics
 from app.observability.audit import audit_store
+from app.observability.tracing import get_request_id, new_id, set_request_id
 
 try:
     from langgraph.types import Command
 except ImportError:  # pragma: no cover
     Command = None
 
-import app.tools.builtin  # noqa: F401  导入即注册工具
+import app.tools.builtin
 from app.llm.gateway import use_real_llm_if_configured
 from app.rag.seed import seed_kb
 from app.tools.registry import registry
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+class _RequestIdFilter(logging.Filter):
+    """把当前请求的 request_id 注入每条日志记录，便于关联。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = get_request_id()
+        return True
+
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [rid=%(request_id)s] %(name)s %(message)s",
+)
+logging.getLogger().addFilter(_RequestIdFilter())
+
 logger = logging.getLogger("srm.main")
 
 
@@ -62,8 +78,8 @@ class Identity(BaseModel):
 
 
 async def current_identity(
-    x_api_key: Optional[str] = Header(None),
-    authorization: Optional[str] = Header(None),
+    x_api_key: str | None = Header(None),
+    authorization: str | None = Header(None),
 ) -> Identity:
     """身份解析：JWT（生产）优先，否则用环境变量注入的 dev key。
 
@@ -109,7 +125,7 @@ class ChatResponse(BaseModel):
     citations: list[dict] = Field(default_factory=list)
     trace: list[dict] = Field(default_factory=list)
     tool_calls: list[dict] = Field(default_factory=list)
-    pending_approval: Optional[dict] = None
+    pending_approval: dict | None = None
     budget: dict = Field(default_factory=dict)
 
 
@@ -143,6 +159,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class ObservabilityMiddleware(BaseHTTPMiddleware):
+    """请求级观测：注入 request_id / trace_id，记录 HTTP 指标。
+
+    作为最外层中间件注册，使 request_id 在整条调用链（节点 span、工具、LLM）
+    都可读到，且能完整度量请求耗时（含限流判定）。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        rid = request.headers.get("X-Request-ID") or new_id()
+        set_request_id(rid)
+        method = request.method
+        endpoint = request.url.path
+        t0 = time.time()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            response.headers["X-Request-ID"] = rid
+            return response
+        finally:
+            prom_metrics.record_http(method, endpoint, status, time.time() - t0)
+
+
 # ── App ───────────────────────────────────────────────────────────────
 
 _app = None
@@ -166,16 +205,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SRM 企业级 Agent",
-    version="0.2.0",
-    description="基于 LangGraph 的供应商服务 Agent：工具调用 + HITL 审批 + 护栏治理 + 审计落盘。",
+    version="0.3.0",
+    description="基于 LangGraph 的供应商服务 Agent：工具调用 + HITL 审批 + 护栏治理 + 审计落盘 + 可观测性。",
 )
 
 app.add_middleware(RateLimitMiddleware, limit_per_min=app_config.RATE_LIMIT_PER_MIN)
+# ObservabilityMiddleware 注册在后 → 成为最外层（先设置 request_id，再度量完整耗时）
+app.add_middleware(ObservabilityMiddleware)
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.2.0", "tools": len(registry.all_tools())}
+    return {"status": "ok", "version": "0.3.0", "tools": len(registry.all_tools())}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 抓取端点：请求数 / Token / 工具调用 / 护栏 / 审批 / 节点耗时。"""
+    data, ctype = prom_metrics.render()
+    return Response(content=data, media_type=ctype)
 
 
 @app.get("/api/tools")
