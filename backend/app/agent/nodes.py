@@ -8,16 +8,19 @@
 
 HITL 审批门（本项目治理核心）
 -----------------------------
-写操作的审批决策按以下优先级确定：
+写操作的审批决策按以下优先级确定（**fail-closed 默认拒绝**）：
 
 1. 调用方持有 `approval:auto` scope → 策略自动放行（内部可信账号）
-2. LangGraph `interrupt` 可用 → 挂起等待人工，恢复时读取决策
-3. 状态中已预设 `approval_decision` → 采用（便于无 interrupt 环境下测试）
-4. 以上都不满足 → **默认拒绝**（安全默认值，fail-closed）
+2. LangGraph `interrupt` 可用 → 挂起等待人工，恢复时读取决策与审批人
+3. 以上都不满足（无 interrupt 能力且非可信账号）→ **默认拒绝**
+
+注意：不存在「外部审批系统回调预设」这一独立分支——无 interrupt 能力时直接 fail-closed，
+因为此时我们无法可靠地挂起等待人工，放行反而更危险。
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -35,6 +38,7 @@ from app.agent.state import (
     ToolCallRecord,
 )
 from app.llm.gateway import get_llm
+from app.observability.audit import audit_store
 from app.tools.base import ToolContext, ToolError
 from app.tools.registry import registry
 
@@ -103,14 +107,18 @@ def _safe_json(text: str) -> dict:
 
 
 def _idem_key(state: dict, step: PlanStep) -> str:
-    """生成幂等键：同一会话 + 同一步骤 + 同一参数 → 同一 key。
+    """生成幂等键：租户 + 用户 + 工具 + 参数。
 
-    保证网络重试/用户重复点击不会重复建单。
+    纳入 tenant/user 才能避免跨租户碰撞（P0-3）：供应商 A、B 相同参数
+    必须得到不同幂等键，否则会复用彼此的工单结果。
     """
-    import hashlib
-
     payload = json.dumps(
-        {"s": state.get("session_id", ""), "t": step.tool, "a": step.args},
+        {
+            "t": step.tool,
+            "tid": state.get("tenant_id", ""),
+            "uid": state.get("user_id", ""),
+            "a": step.args,
+        },
         sort_keys=True,
         ensure_ascii=False,
         default=str,
@@ -220,14 +228,18 @@ async def _run_tool(
     )
 
 
-def _audit(state: dict, action: str, **kw) -> AuditEntry:
-    return AuditEntry(
+def _audit(state: dict, action: str, approver: Optional[str] = None, **kw) -> AuditEntry:
+    entry = AuditEntry(
         tenant_id=state.get("tenant_id", ""),
         user_id=state.get("user_id", ""),
         session_id=state.get("session_id", ""),
         action=action,
+        approver=approver,
         **kw,
     )
+    # 同时写入进程级 append-only 审计存储（可导出、可落盘），不再只活在 state 里
+    audit_store.append(entry)
+    return entry
 
 
 # ── 节点 ──────────────────────────────────────────────────────────────
@@ -258,7 +270,10 @@ async def planner(state: dict) -> dict:
     """规划：把问题拆解为工具调用步骤。只暴露调用方有权使用的工具。"""
     budget: Budget = state.get("budget") or Budget()
     if budget.exhausted:
-        return {"plan": [], "trace": state.get("trace", []) + [{"node": "planner", "skipped": "budget_exhausted"}]}
+        return {
+            "plan": [],
+            "trace": state.get("trace", []) + [{"node": "planner", "skipped": "budget_exhausted"}],
+        }
 
     scopes = state.get("user_scopes", [])
     # 工具级授权第一道闸：LLM 只看得到有权调用的工具
@@ -312,7 +327,12 @@ async def planner(state: dict) -> dict:
 
 
 async def executor(state: dict) -> dict:
-    """执行：按计划调用工具；写操作挂起等待审批。"""
+    """执行：只读步骤并发执行；写操作挂起等待审批。
+
+    实现 `depends_on` 的「无依赖可并行」诉求：只读步骤彼此无副作用，
+    用 `asyncio.gather` 并发执行；写操作（side_effect）仍逐一挂起审批，
+    保证 HITL 不被绕过。
+    """
     budget: Budget = state.get("budget") or Budget()
     scopes = state.get("user_scopes", [])
     calls: list[ToolCallRecord] = list(state.get("tool_calls") or [])
@@ -357,77 +377,87 @@ async def executor(state: dict) -> dict:
             "trace": trace + [{"node": "executor", "rejected": pending.tool}],
         }
 
-    # 分支 3：按计划逐步执行
+    # 分支 3：按计划执行（只读并发 + 首个写操作挂起）
+    read_steps: list[PlanStep] = []
+    write_steps: list[PlanStep] = []
     for step in state.get("plan") or []:
         if not step.tool:
             continue
         spec = registry.get(step.tool)
         if spec is None:
-            calls.append(ToolCallRecord(step_id=step.step_id, tool=step.tool, ok=False, error="工具未注册"))
+            calls.append(
+                ToolCallRecord(step_id=step.step_id, tool=step.tool, ok=False, error="工具未注册")
+            )
             continue
-
         # 工具级授权第二道闸：执行前再校验一次
         if not spec.allows(scopes):
             calls.append(
-                ToolCallRecord(step_id=step.step_id, tool=step.tool, ok=False, error="权限不足，已拦截")
+                ToolCallRecord(
+                    step_id=step.step_id, tool=step.tool, ok=False, error="权限不足，已拦截"
+                )
             )
             audit.append(
                 _audit(state, "tool_denied", tool=step.tool, args=step.args, outcome="denied")
             )
             continue
+        if spec.requires_approval:
+            write_steps.append(step)
+        else:
+            read_steps.append(step)
 
+    async def _do_read(step: PlanStep) -> ToolCallRecord:
         # 护栏：预算耗尽 → 强制收敛
         if budget.exhausted:
-            calls.append(
-                ToolCallRecord(
-                    step_id=step.step_id,
-                    tool=step.tool,
-                    ok=False,
-                    error=f"预算耗尽({budget.exhausted_reason})，已中止",
-                )
-            )
-            break
-
-        # 护栏：循环检测
-        if budget.is_repeating(step.tool, step.args):
-            calls.append(
-                ToolCallRecord(
-                    step_id=step.step_id, tool=step.tool, ok=False, error="检测到重复调用，判定为死循环已中止"
-                )
-            )
-            break
-
-        # 写操作 → 挂起，等人工审批
-        if spec.requires_approval:
-            pa = PendingApproval(
+            return ToolCallRecord(
                 step_id=step.step_id,
                 tool=step.tool,
-                args=step.args,
-                rationale=step.description,
-                idempotency_key=_idem_key(state, step),
+                ok=False,
+                error=f"预算耗尽({budget.exhausted_reason})，已中止",
             )
-            audit.append(
-                _audit(
-                    state,
-                    "approval_requested",
-                    tool=step.tool,
-                    args=step.args,
-                    outcome="pending",
-                    idempotency_key=pa.idempotency_key,
-                )
+        # 护栏：循环检测
+        if budget.is_repeating(step.tool, step.args):
+            return ToolCallRecord(
+                step_id=step.step_id,
+                tool=step.tool,
+                ok=False,
+                error="检测到重复调用，判定为死循环已中止",
             )
-            return {
-                "pending_approval": pa,
-                "tool_calls": calls,
-                "audit": audit,
-                "budget": budget,
-                "trace": trace + [{"node": "executor", "awaiting_approval": step.tool}],
-            }
-
-        # 只读 → 直接执行
         rec = await _run_tool(step.tool, step.args, state, step.step_id, None)
-        calls.append(rec)
         budget.consume_step()
+        return rec
+
+    if read_steps:
+        read_results = await asyncio.gather(*[_do_read(s) for s in read_steps])
+        calls.extend(read_results)
+        trace.append({"node": "executor", "read_calls": len(read_results)})
+
+    # 写操作：取第一个挂起，等待人工审批（多写操作场景后续步骤留待下一轮，已知限制）
+    if write_steps:
+        step = write_steps[0]
+        pa = PendingApproval(
+            step_id=step.step_id,
+            tool=step.tool,
+            args=step.args,
+            rationale=step.description,
+            idempotency_key=_idem_key(state, step),
+        )
+        audit.append(
+            _audit(
+                state,
+                "approval_requested",
+                tool=step.tool,
+                args=step.args,
+                outcome="pending",
+                idempotency_key=pa.idempotency_key,
+            )
+        )
+        return {
+            "pending_approval": pa,
+            "tool_calls": calls,
+            "audit": audit,
+            "budget": budget,
+            "trace": trace + [{"node": "executor", "awaiting_approval": step.tool}],
+        }
 
     return {
         "tool_calls": calls,
@@ -439,7 +469,7 @@ async def executor(state: dict) -> dict:
 
 
 def approval(state: dict) -> dict:
-    """审批门：决定写操作是否放行。见模块顶部四级决策优先级。"""
+    """审批门：决定写操作是否放行（见模块顶部三级决策）。"""
     pending: Optional[PendingApproval] = state.get("pending_approval")
     if pending is None:
         return {"approval_decision": None}
@@ -447,10 +477,17 @@ def approval(state: dict) -> dict:
     scopes = set(state.get("user_scopes") or [])
     audit: list[AuditEntry] = list(state.get("audit") or [])
 
-    # 1) 策略自动放行
+    # 1) 策略自动放行（内部可信账号）
     if AUTO_APPROVE_SCOPE in scopes:
         audit.append(
-            _audit(state, "auto_approved", tool=pending.tool, args=pending.args, approved=True)
+            _audit(
+                state,
+                "auto_approved",
+                approver="system:auto",
+                tool=pending.tool,
+                args=pending.args,
+                approved=True,
+            )
         )
         return {
             "approval_decision": True,
@@ -458,7 +495,10 @@ def approval(state: dict) -> dict:
             "trace": state.get("trace", []) + [{"node": "approval", "mode": "auto"}],
         }
 
-    # 2) LangGraph interrupt：挂起等待人工
+    # 2) LangGraph interrupt：挂起等待人工，恢复时读取决策与审批人
+    #    注意：`interrupt()` 通过抛出控制异常（GraphInterrupt）实现挂起，
+    #    该异常**必须自然上浮**由 LangGraph 捕获，绝不能包在 try/except 里吞掉，
+    #    否则会被误判为「无法挂起」而直接 fail-closed。
     if _interrupt is not None:
         decision = _interrupt(
             {
@@ -469,27 +509,37 @@ def approval(state: dict) -> dict:
                 "idempotency_key": pending.idempotency_key,
             }
         )
-        approved = bool(decision.get("approved")) if isinstance(decision, dict) else bool(decision)
+        if not isinstance(decision, dict):
+            decision = {"approved": bool(decision)}
+        approved = bool(decision.get("approved"))
+        reviewer = str(decision.get("reviewer", "") or "")
         audit.append(
-            _audit(state, "human_decision", tool=pending.tool, args=pending.args, approved=approved)
+            _audit(
+                state,
+                "human_decision",
+                approver=reviewer,
+                tool=pending.tool,
+                args=pending.args,
+                approved=approved,
+            )
         )
         return {
             "approval_decision": approved,
             "audit": audit,
-            "trace": state.get("trace", []) + [{"node": "approval", "mode": "interrupt", "approved": approved}],
+            "trace": state.get("trace", [])
+            + [{"node": "approval", "mode": "interrupt", "approved": approved, "reviewer": reviewer}],
         }
 
-    # 3) 状态预设（无 interrupt 环境下的测试/外部审批系统回调）
-    preset = state.get("approval_decision")
-    if preset is not None:
-        audit.append(
-            _audit(state, "preset_decision", tool=pending.tool, args=pending.args, approved=bool(preset))
-        )
-        return {"approval_decision": bool(preset), "audit": audit}
-
-    # 4) 安全默认：拒绝
+    # 3) 安全默认：拒绝（无 interrupt 能力且非可信账号，绝不自动放行）
     audit.append(
-        _audit(state, "denied_by_default", tool=pending.tool, args=pending.args, approved=False)
+        _audit(
+            state,
+            "denied_by_default",
+            approver="system:fail-closed",
+            tool=pending.tool,
+            args=pending.args,
+            approved=False,
+        )
     )
     return {"approval_decision": False, "audit": audit}
 
@@ -533,7 +583,8 @@ async def reflector(state: dict) -> dict:
         "iteration": iteration,
         "sufficient": sufficient,
         "reflection": reason,
-        "trace": state.get("trace", []) + [{"node": "reflector", "sufficient": sufficient, "iteration": iteration}],
+        "trace": state.get("trace", [])
+        + [{"node": "reflector", "sufficient": sufficient, "iteration": iteration}],
     }
 
 
