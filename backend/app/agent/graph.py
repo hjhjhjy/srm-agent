@@ -136,9 +136,18 @@ async def run_agent(
     user_scopes: list[str] | None = None,
     app=None,
 ) -> dict:
-    """便捷入口：跑完一次对话并返回终态。"""
+    """便捷入口：跑完一次对话并返回终态。
+
+    多轮记忆接线（Phase 4）：
+    1. 调用前从会话记忆取该 session 的历史上下文，注入 ``dialogue_context``，
+       让单轮模型也能理解「它/这个/怎么申请」等跨轮指代。
+    2. 调用后把本轮问答写回会话记忆，供后续轮次使用（自动摘要压缩，不爆 token）。
+    """
+    from app.agent.session import get_memory_store
     from app.agent.state import Budget, initial_state
 
+    store = get_memory_store()
+    ctx = store.context(session_id)
     graph = app or build_app()
     state = initial_state(
         question,
@@ -147,6 +156,11 @@ async def run_agent(
         user_id=user_id,
         user_scopes=user_scopes,
         budget=Budget(),
+        dialogue_context=ctx,
     )
     config = {"configurable": {"thread_id": session_id or "default"}}
-    return await graph.ainvoke(state, config=config)
+    result = await graph.ainvoke(state, config=config)
+    # 写回记忆：无论是否中断（HITL），都记录本轮 user 提问与最终答案
+    store.append(session_id, "user", question)
+    store.append(session_id, "assistant", result.get("answer") or "")
+    return result
