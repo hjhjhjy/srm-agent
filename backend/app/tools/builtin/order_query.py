@@ -5,7 +5,7 @@ M1 用内存数据集，标注了清晰的**对接点**：把 `_DEMO_ORDERS` 换
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -14,10 +14,10 @@ from app.tools.registry import registry
 
 
 class OrderQueryArgs(BaseModel):
-    order_no: Optional[str] = Field(
+    order_no: str | None = Field(
         None, description="采购订单号，如 PO20260001；传此参数时忽略 status"
     )
-    status: Optional[Literal["待确认", "已确认", "已发货", "已完成"]] = Field(
+    status: Literal["待确认", "已确认", "已发货", "已完成"] | None = Field(
         None, description="按订单状态过滤"
     )
     limit: int = Field(5, ge=1, le=20, description="最多返回条数")
