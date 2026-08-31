@@ -20,15 +20,16 @@
 工具的 `side_effect` 声明与 `requires_approval` 强绑定（后者是前者的派生属性），
 **不允许开发者单独关闭**——避免"某个工具忘了配审批"这类人为疏漏。
 
-审批决策四级优先级：
+审批决策三级优先级：
 
 1. 持有 `approval:auto` scope → 策略自动放行（内部可信账号）
-2. LangGraph `interrupt` 可用 → 挂起等待人工
-3. 状态中预设 `approval_decision` → 外部审批系统回调
-4. 以上都不满足 → **拒绝**
+2. LangGraph `interrupt` 可用 → 挂起等待人工，恢复时记录审批人
+3. 以上都不满足（无 interrupt 能力且非可信账号）→ **拒绝**
 
-第 4 条是关键：**fail-closed**。拿不到明确的人工决策时默认拒绝，
+第 3 条是关键：**fail-closed**。拿不到明确的人工决策时默认拒绝，
 而不是默认放行 —— 宁可让用户多等一次审批，也不能擅自改数据。
+不存在「外部审批系统回调预设」这一独立分支：无 interrupt 能力时无法可靠挂起，
+此时直接 fail-closed 比「放行」更安全。
 
 ### 2. 写操作必须携带幂等键，否则拒绝执行
 
@@ -37,8 +38,8 @@ if not ctx.idempotency_key:
     raise ToolError("写操作必须携带 idempotency_key，否则无法保证幂等")
 ```
 
-幂等键由编排层生成：`md5(session_id + tool + args)`，
-保证同一会话内相同操作得到相同 key。
+幂等键由编排层生成：`md5(tenant_id + user_id + tool + args)`，
+保证相同租户/用户下相同操作得到相同 key，**跨租户不会碰撞**。
 
 命中幂等键时**回放首次结果**（含首次生成的工单号），而非重新执行。
 
