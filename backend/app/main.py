@@ -32,7 +32,9 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.agent.graph import build_app
+from app.agent.checkpoint import get_checkpoint_store
+from app.agent.graph import build_app, run_agent
+from app.agent.memory_layers import get_memory_manager
 from app.agent.state import Budget, initial_state
 from app.core import config as app_config
 from app.core.jwt import verify_jwt
@@ -118,6 +120,18 @@ def derive_thread_id(identity: Identity, session_id: str) -> str:
 def require_scope(identity: Identity, scope: str) -> None:
     if scope not in identity.scopes:
         raise HTTPException(status_code=403, detail=f"缺少所需权限: {scope}")
+
+
+def _assert_self_or_scope(identity: Identity, tenant: str, user: str, scope: str) -> None:
+    """合规操作鉴权：允许操作自身数据，或持有指定管理 scope 操作用户数据。"""
+    if tenant == identity.tenant_id and user == identity.user_id:
+        return
+    if scope in identity.scopes:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"仅能操作自身记忆数据；操作用户 {tenant}/{user} 需 {scope} 权限",
+    )
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -254,17 +268,20 @@ async def export_audit(identity: Identity = Depends(current_identity)):
 async def chat(req: ChatRequest, identity: Identity = Depends(current_identity)):
     set_identity(identity.tenant_id, identity.user_id)
     graph = get_app()
-    state = initial_state(
+    thread_id = derive_thread_id(identity, req.session_id)
+    logger.info("收到提问 tenant=%s q=%s", identity.tenant_id, _masked(req.question))
+    # M4：经 run_agent 统一入口，自动写入四层合规记忆 + 逐节点检查点
+    result = await run_agent(
         req.question,
         session_id=req.session_id,
         tenant_id=identity.tenant_id,
         user_id=identity.user_id,
         user_scopes=identity.scopes,
-        budget=Budget(),
+        app=graph,
+        memory_manager=get_memory_manager(),
+        checkpoint_store=get_checkpoint_store(),
+        thread_id=thread_id,
     )
-    config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
-    logger.info("收到提问 tenant=%s q=%s", identity.tenant_id, _masked(req.question))
-    result = await graph.ainvoke(state, config=config)
     return _to_response(result)
 
 
@@ -322,6 +339,55 @@ async def resume_approval(req: ApprovalRequest, identity: Identity = Depends(cur
     )
     logger.info("审批恢复 tenant=%s reviewer=%s approved=%s", identity.tenant_id, reviewer, req.approved)
     return _to_response(result)
+
+
+# ── M4：合规记忆与检查点管理 ───────────────────────────────────────────
+
+
+@app.delete("/api/memory/identities/{tenant}/{user}")
+async def forget_identity(tenant: str, user: str, identity: Identity = Depends(current_identity)):
+    """被遗忘权（Right to be Forgotten）：删除该身份在四层记忆中的全部数据。
+
+    仅本人可操作自身数据；跨身份操作需持有 ``compliance:manage`` scope。
+    """
+    _assert_self_or_scope(identity, tenant, user, "compliance:manage")
+    counts = get_memory_manager().forget_identity(tenant, user)
+    return {"tenant": tenant, "user": user, "removed": counts}
+
+
+@app.get("/api/memory/identities/{tenant}/{user}/export")
+async def export_identity(tenant: str, user: str, identity: Identity = Depends(current_identity)):
+    """数据可携（DSAR）：导出该身份的全部（已脱敏）记忆数据。"""
+    _assert_self_or_scope(identity, tenant, user, "compliance:manage")
+    return {
+        "tenant": tenant,
+        "user": user,
+        "data": get_memory_manager().export_identity(tenant, user),
+    }
+
+
+@app.get("/api/checkpoints/{session_id}")
+async def list_checkpoints(session_id: str, identity: Identity = Depends(current_identity)):
+    """列出某会话的全部检查点（按节点命名，含时间戳）。"""
+    thread_id = derive_thread_id(identity, session_id)
+    cps = get_checkpoint_store().list(thread_id)
+    return {
+        "thread_id": thread_id,
+        "checkpoints": [{"id": c.id, "node": c.node, "ts": c.ts} for c in cps],
+    }
+
+
+@app.delete("/api/checkpoints/{session_id}/{checkpoint_id}")
+async def delete_checkpoint(
+    session_id: str, checkpoint_id: str, identity: Identity = Depends(current_identity)
+):
+    """删除某会话的单个检查点（仅限本身份派生 thread 下的检查点）。"""
+    thread_id = derive_thread_id(identity, session_id)
+    cp = get_checkpoint_store().load(checkpoint_id)
+    if cp is None or cp.thread_id != thread_id:
+        raise HTTPException(status_code=404, detail="检查点不存在或无权限")
+    get_checkpoint_store().delete(checkpoint_id)
+    return {"deleted": checkpoint_id}
 
 
 # ── 辅助 ──────────────────────────────────────────────────────────────

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent.checkpoint import reset_checkpoint_store
+from app.agent.memory_layers import reset_memory_manager
 from app.agent.session import reset_memory_store
 from app.llm.gateway import ScriptedLLM, set_llm
 from app.rag.backend import InMemoryBM25Backend, KBHit, set_backend
@@ -83,4 +85,6 @@ def reset_runtime():
     set_backend(backend)
     reset_idempotency_store()
     reset_memory_store()
+    reset_memory_manager()
+    reset_checkpoint_store()
     yield

@@ -62,6 +62,22 @@ SECURITY_PII_MASKED = Counter(
     "srm_security_pii_masked_total", "被脱敏的 PII 项数", ["type"]
 )
 
+# ── 合规（M4）────────────────────────────────────────────────────────────
+# 合规记忆层的健康度信号：PII 是否在落盘前被脱敏、被遗忘权触发多少次、DSAR 导出次数、
+# 保留期清理了多少条。这些是「记忆是否合规」的可观测证据，缺了它们合规只是口头声明。
+COMPLIANCE_PII_SCRUBBED = Counter(
+    "srm_compliance_pii_scrubbed_total", "合规层落地存储前被脱敏的 PII 项数"
+)
+COMPLIANCE_FORGET_TOTAL = Counter(
+    "srm_compliance_forget_total", "被遗忘权触发后删除的记忆记录数", ["layer"]
+)
+COMPLIANCE_EXPORT_TOTAL = Counter(
+    "srm_compliance_export_total", "数据导出（DSAR / 数据可携）请求次数"
+)
+COMPLIANCE_RETENTION_EXPIRED = Counter(
+    "srm_compliance_retention_expired_total", "因超过保留期被自动清理的记忆记录数", ["layer"]
+)
+
 # ── 成本归因（M3 FinOps）─────────────────────────────────────────────────
 # 企业最先追问的就是「一个月烧多少钱」。本组指标把 LLM token 消耗换算成美元，并
 # 按 (租户, 模型) 归因，便于定位「是哪个租户 / 哪个模型在烧钱」，支撑配额与预算熔断。
@@ -194,6 +210,32 @@ def record_security_injection(n: int) -> None:
 def record_security_pii(n: int) -> None:
     """记录被脱敏的 PII 项数。"""
     SECURITY_PII_MASKED.labels(type="all").inc(n)
+
+
+# ── 合规打点 ──────────────────────────────────────────────────────────────
+
+
+def record_compliance_pii(n: int) -> None:
+    """记录合规记忆层落地前被脱敏的 PII 项数。"""
+    if n:
+        COMPLIANCE_PII_SCRUBBED.inc(n)
+
+
+def record_compliance_forget(layer: str, count: int) -> None:
+    """记录某层因被遗忘权删除的记录数。"""
+    if count:
+        COMPLIANCE_FORGET_TOTAL.labels(layer=layer).inc(count)
+
+
+def record_compliance_export() -> None:
+    """记录一次数据导出（DSAR）请求。"""
+    COMPLIANCE_EXPORT_TOTAL.inc()
+
+
+def record_compliance_retention(layer: str, count: int) -> None:
+    """记录某层因保留期过期被清理的记录数。"""
+    if count:
+        COMPLIANCE_RETENTION_EXPIRED.labels(layer=layer).inc(count)
 
 
 def render() -> tuple[bytes, str]:

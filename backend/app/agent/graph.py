@@ -26,6 +26,8 @@ import logging
 
 from langgraph.graph import END, StateGraph
 
+from app.agent.checkpoint import CheckpointStore
+from app.agent.memory_layers import MemoryManager
 from app.agent.nodes import (
     approval,
     executor,
@@ -135,13 +137,22 @@ async def run_agent(
     user_id: str = "",
     user_scopes: list[str] | None = None,
     app=None,
+    memory_manager: MemoryManager | None = None,
+    checkpoint_store: CheckpointStore | None = None,
+    thread_id: str | None = None,
 ) -> dict:
     """便捷入口：跑完一次对话并返回终态。
 
-    多轮记忆接线（Phase 4）：
+    多轮记忆接线（Phase 4 + M4）：
     1. 调用前从会话记忆取该 session 的历史上下文，注入 ``dialogue_context``，
        让单轮模型也能理解「它/这个/怎么申请」等跨轮指代。
-    2. 调用后把本轮问答写回会话记忆，供后续轮次使用（自动摘要压缩，不爆 token）。
+    2. 若传入 ``memory_manager``（M4 合规记忆），本轮问答会写入四层记忆的
+       情景层（落地前已完成 PII 脱敏）；若传入 ``checkpoint_store``（M4 检查点），
+       运行中每个节点边界都会被显式快照，支持审计 / 回放 / 断点续跑。
+
+    Args:
+        thread_id: 服务端派生的 thread_id（与 ``main.derive_thread_id`` 同源）。
+            留空则由 ``session_id`` 推导，保持与 demo 脚本的向后兼容。
     """
     from app.agent.session import get_memory_store
     from app.agent.state import Budget, initial_state
@@ -158,9 +169,50 @@ async def run_agent(
         budget=Budget(),
         dialogue_context=ctx,
     )
-    config = {"configurable": {"thread_id": session_id or "default"}}
-    result = await graph.ainvoke(state, config=config)
-    # 写回记忆：无论是否中断（HITL），都记录本轮 user 提问与最终答案
+    tid = thread_id or (session_id or "default")
+    config = {"configurable": {"thread_id": tid}}
+
+    if checkpoint_store is not None:
+        result = await _run_with_checkpoints(graph, state, config, checkpoint_store, tid)
+    else:
+        result = await graph.ainvoke(state, config=config)
+
+    answer = result.get("answer") or "" if isinstance(result, dict) else ""
+    # 写回 Phase 4 会话记忆（驱动多轮指代）
     store.append(session_id, "user", question)
-    store.append(session_id, "assistant", result.get("answer") or "")
+    store.append(session_id, "assistant", answer)
+    # 写入 M4 四层合规记忆（含 PII 脱敏）
+    if memory_manager is not None:
+        memory_manager.record_turn(tenant_id, user_id, session_id, "user", question)
+        if answer:
+            memory_manager.record_turn(tenant_id, user_id, session_id, "assistant", answer)
     return result
+
+
+async def _run_with_checkpoints(
+    graph,
+    state: AgentState,
+    config: dict,
+    store: CheckpointStore,
+    thread_id: str,
+) -> dict:
+    """带逐节点检查点的运行：每完成一个节点即快照当前全量状态。
+
+    使用 ``stream_mode="updates"`` 逐个节点推进，并在每个节点后通过
+    ``graph.aget_state`` 抓取完整状态做快照。遇到 HITL 中断（``__interrupt__``）
+    时自然停止，已捕获中断前的全部节点检查点。
+    """
+    async for item in graph.astream(state, config=config, stream_mode="updates"):
+        for node in item:
+            if node == "__interrupt__":
+                continue
+            try:
+                snap = await graph.aget_state(config)
+            except Exception:
+                snap = None
+            if snap is not None and getattr(snap, "values", None):
+                store.save(snap.values, thread_id=thread_id, node=node)
+    last = await graph.aget_state(config)
+    if last is None or not getattr(last, "values", None):
+        return {}
+    return dict(last.values)
