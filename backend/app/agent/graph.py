@@ -115,6 +115,11 @@ def build_app(checkpointer=None):
 
     生产替换为 `langgraph.checkpoint.postgres.AsyncPostgresSaver`，
     以获得跨进程、可持久的检查点能力。
+
+    状态中包含 pydantic 模型（PlanStep / PendingApproval / Budget /
+    AuditEntry / ToolCallRecord）。LangGraph 1.x 在 checkpointer 序列化时
+    会对这些未注册类型打印弃用告警，但当前版本可正确往返；升级 LangGraph
+    大版本时需注意为这些类型注册 msgpack 白名单（见 ADR-0002）。
     """
     if checkpointer is None:
         from langgraph.checkpoint.memory import MemorySaver
