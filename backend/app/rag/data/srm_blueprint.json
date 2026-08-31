@@ -1,0 +1,402 @@
+[
+  {
+    "chunk_id": "subflow:SM_0001",
+    "text": "供应商注册支持三种方式：公开注册（供应商在 SRM 门户自助填写企业信息提交）、邀请注册（由采购专员发送邀请链接）、代注册（由采购方代为录入）。注册资料审核周期一般为 3个工作日。",
+    "flow_code": "QS_SRM_SM_0001",
+    "flow_name": "供应商注册",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "subflow:SM_0002",
+    "text": "资质准入需提交资质清单，含阳光协议、保密协议、质量协议、营业执照、法定代表人身份证、开户许可证。资质到期前 60天系统会发送预警通知，供应商应及时更新。",
+    "flow_code": "QS_SRM_SM_0002",
+    "flow_name": "资质准入",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "subflow:QM_0001",
+    "text": "收到整改通知（QS_SRM_QM_0001）后，供应商需在 7个工作日内提交整改报告，说明原因、纠正措施与预防措施，并对整改通知进行回复。逾期未处理将影响绩效评分，系统会发出整改预警。",
+    "flow_code": "QS_SRM_QM_0001",
+    "flow_name": "整改管理",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "质量管理"
+  },
+  {
+    "chunk_id": "subflow:MD_0004",
+    "text": "物料价格有效期管理：当物料价格即将到期（提前 30天），采购与供应商需就新价格进行洽谈并重新确认，避免价格失效影响下单。",
+    "flow_code": "QS_SRM_MD_0004",
+    "flow_name": "物料价格管理",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "主数据"
+  },
+  {
+    "chunk_id": "subflow:SC_0001",
+    "text": "收到询价单后，供应商应按时在系统填报价，完成报价。报价需注意有效期与交期。",
+    "flow_code": "QS_SRM_SC_0001",
+    "flow_name": "询价报价",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "寻源采购"
+  },
+  {
+    "chunk_id": "subflow:SC_0002",
+    "text": "竞价采购：系统发布竞价单，供应商参与竞价，按最低价成交。",
+    "flow_code": "QS_SRM_SC_0002",
+    "flow_name": "竞价",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "寻源采购"
+  },
+  {
+    "chunk_id": "subflow:SC_0003",
+    "text": "招标采购：发布招标文件，供应商投标，评标后定标。",
+    "flow_code": "QS_SRM_SC_0003",
+    "flow_name": "招标",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "寻源采购"
+  },
+  {
+    "chunk_id": "subflow:CM_0002",
+    "text": "收到合同单后，供应商需查收合同，确认条款后在线签署并加盖电子章（盖章）完成签署。合同签署状态可在线查看。",
+    "flow_code": "QS_SRM_CM_0002",
+    "flow_name": "合同签署",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "合同管理"
+  },
+  {
+    "chunk_id": "subflow:PO_0003",
+    "text": "采购订单接收：供应商接收采购订单并确认。",
+    "flow_code": "QS_SRM_PO_0003",
+    "flow_name": "订单接收确认",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "采购执行"
+  },
+  {
+    "chunk_id": "subflow:PO_0008",
+    "text": "采购订单发货：供应商接收采购订单后，按订单要求执行发货并维护发货通知单、跟踪物流状态，与订单接收确认、订单退货共同构成采购订单执行闭环。",
+    "flow_code": "QS_SRM_PO_0008",
+    "flow_name": "订单发货",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "采购执行"
+  },
+  {
+    "chunk_id": "subflow:PO_0010",
+    "text": "采购订单退货：发生退货时，供应商按流程处理退货并确认。",
+    "flow_code": "QS_SRM_PO_0010",
+    "flow_name": "订单退货",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "采购执行"
+  },
+  {
+    "chunk_id": "subflow:RM_0003",
+    "text": "供应商应在每月 1-5 日发起对账并上传发票，采购专员核对无误后确认。对账差异需及时沟通。",
+    "flow_code": "QS_SRM_RM_0003",
+    "flow_name": "对账管理",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "subflow:RM_0001",
+    "text": "收到赔偿金单后，供应商需核对金额并确认，有异议及时申诉。",
+    "flow_code": "QS_SRM_RM_0001",
+    "flow_name": "赔偿金",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "subflow:RM_0002",
+    "text": "收到附加费用单后，供应商需核对费用明细并确认。",
+    "flow_code": "QS_SRM_RM_0002",
+    "flow_name": "附加费用",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "subflow:RM_0005",
+    "text": "供应商可在报表中心查看付款进度，跟踪每笔款项的付款状态与预计到账时间。",
+    "flow_code": "QS_SRM_RM_0005",
+    "flow_name": "付款进度",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "subflow:SM_0010",
+    "text": "供应商绩效报表可在 SRM 系统【报表中心】-【供应商绩效】查看，包含交付及时率、合格率、服务响应评分等考核维度。",
+    "flow_code": "QS_SRM_SM_0010",
+    "flow_name": "供应商绩效",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "subflow:MD_0002",
+    "text": "物料主数据通过接口从 BIP 系统同步到 SRM：BIP 推送物料主数据变更，SRM 接收并落库，接口保障主数据一致。",
+    "flow_code": "QS_SRM_MD_0002",
+    "flow_name": "物料主数据同步",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "主数据"
+  },
+  {
+    "chunk_id": "subflow:MD_0003",
+    "text": "商品首营指新商品首次进入供应体系前的首营审核，供应商需提交商品资质与首营资料，审核通过后方可交易。",
+    "flow_code": "QS_SRM_MD_0003",
+    "flow_name": "商品首营",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "主数据"
+  },
+  {
+    "chunk_id": "subflow:SM_0003",
+    "text": "样品确认流程第一步：供应商寄送样品。",
+    "flow_code": "QS_SRM_SM_0003",
+    "flow_name": "样品寄送",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "subflow:SM_0004",
+    "text": "样品确认流程第二步（小试）：采购对供应商寄送的样品进行小试验证，验证合格方可进入中试。",
+    "flow_code": "QS_SRM_SM_0004",
+    "flow_name": "样品小试",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "subflow:SM_0005",
+    "text": "样品确认流程第三步：通过小试后进入中试。",
+    "flow_code": "QS_SRM_SM_0005",
+    "flow_name": "样品中试",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "subflow:RD_0001",
+    "text": "收到工程变更单（ECN）后，供应商需查看变更内容，评估影响并确认执行工程变更。",
+    "flow_code": "QS_SRM_RD_0001",
+    "flow_name": "工程变更",
+    "tenant_id": "public",
+    "chunk_type": "subflow",
+    "appendix_type": "",
+    "module": "研发协同"
+  },
+  {
+    "chunk_id": "appendix:form:SM_0001",
+    "text": "供应商注册需提交的文件清单（form）：营业执照、法定代表人身份证、开户许可证、税务登记证。",
+    "flow_code": "QS_SRM_SM_0001",
+    "flow_name": "注册文件清单",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "appendix:form:SM_0002",
+    "text": "资质准入材料清单（form）：阳光协议、保密协议、质量协议、营业执照、法定代表人身份证、开户许可证。",
+    "flow_code": "QS_SRM_SM_0002",
+    "flow_name": "资质材料清单",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "appendix:form:SC_0001",
+    "text": "报价需提交报价单（form），含单价、交期、有效期。",
+    "flow_code": "QS_SRM_SC_0001",
+    "flow_name": "报价单",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "寻源采购"
+  },
+  {
+    "chunk_id": "appendix:form:RM_0001",
+    "text": "赔偿金单与附加费用单为结算单据（form），需核对金额后确认。",
+    "flow_code": "QS_SRM_RM_0001",
+    "flow_name": "结算单据",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "appendix:form:SM_0003",
+    "text": "样品确认需填写样品确认单（form）。",
+    "flow_code": "QS_SRM_SM_0003",
+    "flow_name": "样品确认单",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "appendix:form:MD_0003",
+    "text": "商品首营需提交首营资料（form）。",
+    "flow_code": "QS_SRM_MD_0003",
+    "flow_name": "首营资料",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "主数据"
+  },
+  {
+    "chunk_id": "appendix:form:CM_0002",
+    "text": "合同单为电子合同（form），在线查收与签署。",
+    "flow_code": "QS_SRM_CM_0002",
+    "flow_name": "电子合同",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "合同管理"
+  },
+  {
+    "chunk_id": "appendix:form:PO",
+    "text": "采购订单相关单据（form）含订单、发货通知单、退货单。",
+    "flow_code": "QS_SRM_PO_0003",
+    "flow_name": "订单单据",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "form",
+    "module": "采购执行"
+  },
+  {
+    "chunk_id": "appendix:message:CM_0002",
+    "text": "合同单到达时会发送消息通知（message），供应商查收后签署。",
+    "flow_code": "QS_SRM_CM_0002",
+    "flow_name": "合同消息",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "message",
+    "module": "合同管理"
+  },
+  {
+    "chunk_id": "appendix:message:RM_0003",
+    "text": "对账与发票相关提醒通过消息（message）推送，供应商上传发票后采购确认。",
+    "flow_code": "QS_SRM_RM_0003",
+    "flow_name": "对账消息",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "message",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "appendix:warning:QM_0001",
+    "text": "整改通知伴随预警（warning），供应商需及时回复整改报告。",
+    "flow_code": "QS_SRM_QM_0001",
+    "flow_name": "整改预警",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "warning",
+    "module": "质量管理"
+  },
+  {
+    "chunk_id": "appendix:warning:SM_0002",
+    "text": "资质到期前 60天发送预警（warning），提醒更新。",
+    "flow_code": "QS_SRM_SM_0002",
+    "flow_name": "资质到期预警",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "warning",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "appendix:warning:MD_0004",
+    "text": "物料价格提前 30天预警（warning），提醒洽谈新价。",
+    "flow_code": "QS_SRM_MD_0004",
+    "flow_name": "价格到期预警",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "warning",
+    "module": "主数据"
+  },
+  {
+    "chunk_id": "appendix:warning:PO",
+    "text": "采购订单相关预警（warning）含交期逾期、退货提醒。",
+    "flow_code": "QS_SRM_PO_0003",
+    "flow_name": "订单预警",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "warning",
+    "module": "采购执行"
+  },
+  {
+    "chunk_id": "appendix:report:RM_0005",
+    "text": "付款进度报表（report）展示每笔款项状态。",
+    "flow_code": "QS_SRM_RM_0005",
+    "flow_name": "付款报表",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "report",
+    "module": "财务对账"
+  },
+  {
+    "chunk_id": "appendix:report:SM_0010",
+    "text": "供应商绩效报表（report）含考核维度。",
+    "flow_code": "QS_SRM_SM_0010",
+    "flow_name": "绩效报表",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "report",
+    "module": "供应商管理"
+  },
+  {
+    "chunk_id": "appendix:report:overview",
+    "text": "SRM 系统提供多类报表（report）：采购订单执行、合格率、付款进度、供应商绩效等，均可在报表中心查看。",
+    "flow_code": "",
+    "flow_name": "报表总览",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "report",
+    "module": "报表中心"
+  },
+  {
+    "chunk_id": "appendix:interface:MD_0002",
+    "text": "物料主数据通过 BIP 接口（interface）同步到 SRM。",
+    "flow_code": "QS_SRM_MD_0002",
+    "flow_name": "主数据接口",
+    "tenant_id": "public",
+    "chunk_type": "appendix",
+    "appendix_type": "interface",
+    "module": "主数据"
+  }
+]
