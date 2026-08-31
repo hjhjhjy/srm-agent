@@ -17,8 +17,8 @@ from fastapi.testclient import TestClient
 from app.core import config as app_config
 from app.main import Identity, app, derive_thread_id
 from app.observability.audit import audit_store
-from app.tools.builtin.ticket_create import _TICKETS, reset_idempotency_store
 from app.tools.base import ToolContext
+from app.tools.builtin.ticket_create import _TICKETS, reset_idempotency_store
 from app.tools.registry import registry
 
 
