@@ -6,7 +6,6 @@ import pytest
 from app.rag.backend import get_backend
 from app.tools.base import ToolContext, ToolNotPermitted
 from app.tools.builtin.calculator import safe_eval
-from app.tools.builtin.ticket_create import reset_idempotency_store
 from app.tools.registry import registry
 
 FULL_SCOPES = ["kb:read", "order:read", "ticket:write", "calc:use"]
