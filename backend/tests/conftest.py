@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent.session import reset_memory_store
 from app.llm.gateway import ScriptedLLM, set_llm
 from app.rag.backend import InMemoryBM25Backend, KBHit, set_backend
 from app.tools.builtin.ticket_create import reset_idempotency_store
@@ -81,4 +82,5 @@ def reset_runtime():
     backend.add(DEMO_CHUNKS)
     set_backend(backend)
     reset_idempotency_store()
+    reset_memory_store()
     yield
