@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agent.graph import build_app  # noqa: E402
 from app.agent.state import Budget, initial_state  # noqa: E402
-from app.rag.backend import InMemoryBM25Backend, KBHit, set_backend  # noqa: E402
+from app.rag.seed import seed_kb  # noqa: E402
 
 import app.tools.builtin  # noqa: E402,F401  触发工具注册
 from app.llm.gateway import ScriptedLLM, set_llm  # noqa: E402
@@ -30,37 +30,6 @@ except ImportError:  # pragma: no cover
 
 SCOPES_FULL = ["kb:read", "order:read", "ticket:write", "calc:use"]
 SCOPES_RO = ["kb:read", "order:read"]
-
-KB = [
-    KBHit(
-        chunk_id="c1",
-        flow_code="QS_SRM_RG_0001",
-        flow_name="供应商注册",
-        text=(
-            "供应商注册流程：进入 SRM 门户点击供应商注册，填写企业基本信息，"
-            "上传营业执照、税务登记证、组织机构代码证，提交后等待采购专员审核，"
-            "审核周期一般为 3 个工作日。"
-        ),
-    ),
-    KBHit(
-        chunk_id="c2",
-        flow_code="QS_SRM_QM_0001",
-        flow_name="资质准入",
-        text=(
-            "资质准入需提交：阳光协议、保密协议、质量协议、营业执照、"
-            "法定代表人身份证、开户许可证。资质到期前 60 天系统会发送预警通知。"
-        ),
-    ),
-    KBHit(
-        chunk_id="c3",
-        flow_code="QS_SRM_RM_0003",
-        flow_name="对账管理",
-        text=(
-            "对账流程：供应商在每月 1-5 日发起对账并上传发票，"
-            "采购专员核对无误后提交财务，付款周期为发票入账后 30 天。"
-        ),
-    ),
-]
 
 SEPARATOR = "=" * 72
 
@@ -95,9 +64,7 @@ async def _run(graph, state, config, approve: bool = True):
 
 
 async def main() -> None:
-    backend = InMemoryBM25Backend()
-    backend.add(KB)
-    set_backend(backend)
+    seed_kb()  # 混合检索后端（BM25 + 离线稠密 + RRF）+ blueprint 语料
     set_llm(ScriptedLLM())  # 空队列 → 全程走规则降级路径
     reset_idempotency_store()
 
