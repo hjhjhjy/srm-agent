@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Iterable, Optional, Protocol
+from collections.abc import Iterable
+from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class KBHit(BaseModel):
@@ -40,7 +41,7 @@ class RetrievalBackend(Protocol):
         query: str,
         *,
         top_k: int = 4,
-        flow_code: Optional[str] = None,
+        flow_code: str | None = None,
         tenant_id: str = "",
     ) -> list[KBHit]: ...
 
@@ -99,7 +100,7 @@ class InMemoryBM25Backend:
         query: str,
         *,
         top_k: int = 4,
-        flow_code: Optional[str] = None,
+        flow_code: str | None = None,
         tenant_id: str = "",
     ) -> list[KBHit]:
         n = len(self._hits)
