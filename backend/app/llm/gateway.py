@@ -12,6 +12,7 @@ M1 默认 `ScriptedLLM`（离线可跑）；配置 API Key 后自动切换 `Open
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -42,6 +43,7 @@ class BaseLLM(Protocol):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        phase: str = "unknown",
     ) -> LLMResponse: ...
 
 
@@ -55,7 +57,9 @@ class ScriptedLLM:
     def push(self, resp: LLMResponse | str) -> None:
         self._queue.append(resp)
 
-    async def achat(self, messages, tools=None) -> LLMResponse:
+    async def achat(
+        self, messages, tools=None, phase: str = "unknown"
+    ) -> LLMResponse:
         self.calls.append({"messages": messages, "tools": tools})
         t0 = time.time()
         if not self._queue:
@@ -66,7 +70,9 @@ class ScriptedLLM:
                 resp = LLMResponse(content=item, tokens=max(1, len(item) // 2), model="scripted")
             else:
                 resp = item
-        metrics.record_llm(resp.model or "scripted", resp.tokens, time.time() - t0, error=False)
+        metrics.record_llm(
+            resp.model or "scripted", resp.tokens, time.time() - t0, error=False, phase=phase
+        )
         return resp
 
 
@@ -84,6 +90,8 @@ class OpenAICompatLLM:
         secondary_base_url: str | None = None,
         secondary_api_key: str | None = None,
         secondary_model: str | None = None,
+        max_retries: int = 2,
+        retry_base: float = 1.0,
     ):
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
         self.api_key = api_key or os.getenv("LLM_API_KEY", "")
@@ -92,38 +100,60 @@ class OpenAICompatLLM:
         self.secondary_base_url = secondary_base_url or os.getenv("LLM_BASE_URL_SECONDARY", "")
         self.secondary_api_key = secondary_api_key or os.getenv("LLM_API_KEY_SECONDARY", "")
         self.secondary_model = secondary_model or os.getenv("LLM_MODEL_SECONDARY", "")
+        # 重试策略：单次调用最多重试 max_retries 次，退避 = retry_base * 2**attempt
+        self.max_retries = max_retries
+        self.retry_base = retry_base
 
     @property
     def available(self) -> bool:
         return bool(self.api_key)
 
-    async def achat(self, messages, tools=None) -> LLMResponse:
+    async def achat(
+        self, messages, tools=None, phase: str = "unknown"
+    ) -> LLMResponse:
         if not self.available:
-            metrics.record_llm("unavailable", 0, 0.0, error=True)
+            metrics.record_llm("unavailable", 0, 0.0, error=True, phase=phase)
             raise RuntimeError("未配置 LLM_API_KEY")
         t0 = time.time()
         try:
-            resp = await self._call(messages, tools, self.base_url, self.api_key, self.model)
+            resp = await self._call_with_retry(
+                messages, tools, self.base_url, self.api_key, self.model, phase=phase
+            )
         except Exception as exc:
-            metrics.record_llm(self.model, 0, time.time() - t0, error=True)
+            metrics.record_llm(self.model, 0, time.time() - t0, error=True, phase=phase)
             logger.warning("主模型调用失败，尝试备用模型: %s", exc)
             if self.secondary_base_url and self.secondary_api_key and self.secondary_model:
                 t1 = time.time()
                 try:
-                    resp = await self._call(
+                    resp = await self._call_with_retry(
                         messages,
                         tools,
                         self.secondary_base_url,
                         self.secondary_api_key,
                         self.secondary_model,
+                        phase=phase,
                     )
                 except Exception:
-                    metrics.record_llm(self.secondary_model, 0, time.time() - t1, error=True)
+                    metrics.record_llm(
+                        self.secondary_model, 0, time.time() - t1, error=True, phase=phase
+                    )
                     raise
             else:
                 raise
-        metrics.record_llm(resp.model or self.model, resp.tokens, time.time() - t0, error=False)
+        metrics.record_llm(
+            resp.model or self.model, resp.tokens, time.time() - t0, error=False, phase=phase
+        )
         return resp
+
+    async def _call_with_retry(
+        self, messages, tools, base_url, api_key, model, phase: str = "unknown"
+    ) -> LLMResponse:
+        """带指数退避重试的调用封装（仅用于真实网络调用）。"""
+        return await _retry_async(
+            lambda: self._call(messages, tools, base_url, api_key, model),
+            max_retries=self.max_retries,
+            retry_base=self.retry_base,
+        )
 
     async def _call(self, messages, tools, base_url, api_key, model) -> LLMResponse:
         import httpx  # 延迟导入，避免离线环境强制依赖
@@ -157,6 +187,35 @@ class OpenAICompatLLM:
             tokens=int(usage.get("total_tokens") or 0),
             model=model,
         )
+
+
+async def _retry_async(
+    func,
+    *,
+    max_retries: int = 2,
+    retry_base: float = 1.0,
+    exceptions: tuple = (Exception,),
+) -> Any:
+    """指数退避重试。
+
+    对 ``func()``（异步可调用，无参数）执行最多 ``max_retries + 1`` 次尝试。
+    遇到 ``exceptions`` 中声明的异常时，按 ``retry_base * 2**attempt`` 秒退避后
+    重试；全部失败后抛出最后一次捕获的异常。成功则立即返回结果。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await func()
+        except exceptions as exc:
+            last_exc = exc
+            if attempt >= max_retries:
+                break
+            backoff = retry_base * (2 ** attempt)
+            logger.warning("LLM 调用第 %d 次失败，%.2fs 后重试: %s", attempt + 1, backoff, exc)
+            await asyncio.sleep(backoff)
+    # last_exc 在此分支必不为 None（至少尝试了一次且捕获了异常）
+    assert last_exc is not None
+    raise last_exc
 
 
 _llm: BaseLLM = ScriptedLLM()
