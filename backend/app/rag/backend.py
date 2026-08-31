@@ -27,6 +27,10 @@ class KBHit(BaseModel):
     flow_code: str = ""
     flow_name: str = ""
     tenant_id: str = "public"  # public = 全租户可见的公共知识
+    # 以下字段为 v1 语料结构对齐（用于检索过滤与引用溯源 / 附录意图提权）
+    chunk_type: str = ""  # subflow | module_overview | appendix
+    appendix_type: str = ""  # form | message | warning | report | interface
+    module: str = ""
     score: float = 0.0
 
 
