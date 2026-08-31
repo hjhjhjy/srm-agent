@@ -58,11 +58,15 @@ async def ticket_create(args: TicketCreateArgs, ctx: ToolContext) -> dict:
     if not ctx.idempotency_key:
         raise ToolError("写操作必须携带 idempotency_key，否则无法保证幂等")
 
-    # 幂等：同 key 直接回放首次结果，不再重复建单
+    # 幂等：同 key + 同租户/用户 才回放首次结果，杜绝跨租户碰撞（P0-3）
     if ctx.idempotency_key in _IDEMPOTENCY_STORE:
-        cached = dict(_IDEMPOTENCY_STORE[ctx.idempotency_key])
-        cached["replayed"] = True
-        return cached
+        cached = _IDEMPOTENCY_STORE[ctx.idempotency_key]
+        if cached.get("tenant_id") == ctx.tenant_id and cached.get("supplier_id") == ctx.user_id:
+            return {**cached, "replayed": True}
+        # 幂等键冲突但租户不一致：视为不同请求，用派生键避免覆盖他人记录
+        eff_key = f"{ctx.idempotency_key}:{ctx.tenant_id}:{ctx.user_id}"
+    else:
+        eff_key = ctx.idempotency_key
 
     ticket = {
         "ticket_no": "TK" + uuid.uuid4().hex[:10].upper(),
@@ -74,6 +78,6 @@ async def ticket_create(args: TicketCreateArgs, ctx: ToolContext) -> dict:
         "status": "待分配",
         "created_at": int(time.time()),
     }
-    _IDEMPOTENCY_STORE[ctx.idempotency_key] = ticket
+    _IDEMPOTENCY_STORE[eff_key] = ticket
     _TICKETS.append(ticket)
     return {**ticket, "replayed": False}
