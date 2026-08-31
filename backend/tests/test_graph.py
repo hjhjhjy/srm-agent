@@ -13,9 +13,9 @@ import pytest
 from app.agent.graph import build_app
 from app.agent.nodes import executor
 from app.agent.state import Budget, PlanStep, initial_state
-from app.tools.registry import registry
 from app.llm.gateway import LLMResponse, ToolCall, get_llm
 from app.tools.builtin.ticket_create import _TICKETS
+from app.tools.registry import registry
 
 try:
     from langgraph.types import Command
