@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 环境与密钥（绝不入库）
+.env
+.env.*
+*.key
+*.pem
+
+# 数据与模型（体积大，走制品/对象存储）
+backend/app/data/
+*.db
+*.sqlite3
+*.npy
+*.pkl
+
+# 前端
+node_modules/
+dist/
+.vite/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 日志与临时
+logs/
+*.log
+tmp/
