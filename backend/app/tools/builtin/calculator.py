@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import ast
 import operator
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -26,7 +28,7 @@ class CalculatorArgs(BaseModel):
     )
 
 
-_BIN_OPS = {
+_BIN_OPS: dict[type[ast.AST], Callable[..., Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -35,7 +37,7 @@ _BIN_OPS = {
     ast.Mod: operator.mod,
     ast.Pow: operator.pow,
 }
-_UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+_UNARY_OPS: dict[type[ast.AST], Callable[..., Any]] = {ast.UAdd: operator.pos, ast.USub: operator.neg}
 
 
 def _eval(node: ast.AST) -> float:

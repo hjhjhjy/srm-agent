@@ -121,6 +121,7 @@ class ToolRegistry:
 
         validated = spec.args_model(**args)
         try:
+            assert spec.fn is not None, "已通过权限校验，工具 fn 必存在"
             result = spec.fn(validated, ctx)
             if inspect.isawaitable(result):
                 result = await result

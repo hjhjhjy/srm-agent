@@ -139,10 +139,10 @@ class HybridBackend(RetrievalBackend):
         for cid in list(fused):
             h = self._hits[self._by_id[cid]]
             if h.chunk_type == "appendix" and h.flow_code in cand_flows:
-                r = bm25_rank.get(cid)
-                if r is None:
+                rank = bm25_rank.get(cid)
+                if rank is None:
                     continue
-                rel = max(0.0, 1.0 - r / 20.0)
+                rel = max(0.0, 1.0 - rank / 20.0)
                 if rel <= 0:
                     continue
                 fused[cid] += self._boost_app_flow * rel
@@ -154,10 +154,10 @@ class HybridBackend(RetrievalBackend):
                 h = self._hits[self._by_id[cid]]
                 if h.chunk_type != "appendix" or h.appendix_type not in mw_types:
                     continue
-                r = bm25_rank.get(cid)
-                if r is None:
+                rank = bm25_rank.get(cid)
+                if rank is None:
                     continue
-                rel = max(0.0, 1.0 - r / 20.0)  # 仅 BM25 前 20 名的附录参与提权
+                rel = max(0.0, 1.0 - rank / 20.0)  # 仅 BM25 前 20 名的附录参与提权
                 if rel <= 0:
                     continue
                 fused[cid] += self._boost_app_intent * rel
@@ -170,12 +170,12 @@ class HybridBackend(RetrievalBackend):
         selected: list[str] = []
         pool = sorted(fused, key=lambda c: -fused[c])
         while len(selected) < top_k and pool:
+            best: str | None
             if not selected:
                 best = pool[0]
             else:
                 sel_idx = [self._by_id[s] for s in selected]
-                best = None
-                best_score = None
+                best_score: float | None = None
                 for c in pool:
                     if c in selected:
                         continue
@@ -190,6 +190,7 @@ class HybridBackend(RetrievalBackend):
                     if best_score is None or s > best_score:
                         best_score = s
                         best = c
+            assert best is not None, "pool 非空时必能选出候选"
             selected.append(best)
             pool.remove(best)
 

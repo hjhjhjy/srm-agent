@@ -39,16 +39,20 @@ from app.core.jwt import verify_jwt
 from app.observability import metrics as prom_metrics
 from app.observability.audit import audit_store
 from app.observability.tracing import get_request_id, new_id, set_request_id
+from app.security.sanitize import mask_pii, mask_pii_in_answer
 
 try:
     from langgraph.types import Command
 except ImportError:  # pragma: no cover
-    Command = None
+    Command = None  # type: ignore
 
-import app.tools.builtin
 from app.llm.gateway import use_real_llm_if_configured
 from app.rag.seed import seed_kb
+from app.tools import builtin  # noqa: F401  (side-effect: 导入即注册全部内置工具)
 from app.tools.registry import registry
+
+# 出口答案 PII 脱敏开关（默认关闭以保留答案完整度；强合规场景置为 1/true/yes 开启）
+_MASK_PII_ANSWER = os.getenv("SRM_MASK_PII_ANSWER", "").lower() in {"1", "true", "yes"}
 
 
 class _RequestIdFilter(logging.Filter):
@@ -253,6 +257,7 @@ async def chat(req: ChatRequest, identity: Identity = Depends(current_identity))
         budget=Budget(),
     )
     config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
+    logger.info("收到提问 tenant=%s q=%s", identity.tenant_id, _masked(req.question))
     result = await graph.ainvoke(state, config=config)
     return _to_response(result)
 
@@ -272,6 +277,7 @@ async def chat_stream(req: ChatRequest, identity: Identity = Depends(current_ide
         budget=Budget(),
     )
     config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
+    logger.info("收到流式提问 tenant=%s q=%s", identity.tenant_id, _masked(req.question))
 
     async def gen():
         async for event in graph.astream(state, config=config, stream_mode="updates"):
@@ -330,12 +336,20 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _masked(text: str) -> str:
+    """日志脱敏：永远剥离 PII，防止敏感信息进入日志（常开）。"""
+    return mask_pii(text)[0]
+
+
 def _to_response(result: dict) -> ChatResponse:
     """把图终态收敛为白名单响应（不暴露原始工具结果/全量审计）。"""
     pending = result.get("pending_approval")
     budget = result.get("budget")
+    answer = result.get("answer", "")
+    if _MASK_PII_ANSWER:
+        answer, _ = mask_pii_in_answer(answer)
     return ChatResponse(
-        answer=result.get("answer", ""),
+        answer=answer,
         intent=result.get("intent", ""),
         citations=_clean(result.get("citations") or []),
         trace=_clean(result.get("trace") or []),

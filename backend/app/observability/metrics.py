@@ -26,10 +26,12 @@ REQUEST_LATENCY = Histogram(
 )
 
 # ── LLM ──────────────────────────────────────────────────────────────
-LLM_CALLS = Counter("srm_llm_calls_total", "LLM 调用数", ["model"])
-LLM_TOKENS = Counter("srm_llm_tokens_total", "LLM 消耗 token 数", ["model"])
-LLM_ERRORS = Counter("srm_llm_errors_total", "LLM 调用错误数", ["model"])
-LLM_LATENCY = Histogram("srm_llm_duration_seconds", "LLM 调用耗时(秒)", ["model"])
+# phase 标签用于成本归因：区分 router / planner / reflector / responder 各阶段的
+# 调用与 token 消耗，便于定位「是哪个环节在烧 token」。
+LLM_CALLS = Counter("srm_llm_calls_total", "LLM 调用数", ["model", "phase"])
+LLM_TOKENS = Counter("srm_llm_tokens_total", "LLM 消耗 token 数", ["model", "phase"])
+LLM_ERRORS = Counter("srm_llm_errors_total", "LLM 调用错误数", ["model", "phase"])
+LLM_LATENCY = Histogram("srm_llm_duration_seconds", "LLM 调用耗时(秒)", ["model", "phase"])
 
 # ── 工具 ─────────────────────────────────────────────────────────────
 TOOL_CALLS = Counter("srm_tool_calls_total", "工具调用数", ["tool", "ok"])
@@ -43,6 +45,17 @@ GUARDRAIL_TRIGGERS = Counter(
 APPROVAL_EVENTS = Counter("srm_approval_events_total", "审批事件数", ["event"])
 NODE_LATENCY = Histogram("srm_node_duration_seconds", "编排节点耗时(秒)", ["node"])
 
+# ── 安全纵深 ─────────────────────────────────────────────────────────
+# 提示注入拦截次数（按命中规则聚合）、PII 脱敏项数（按类型聚合）。
+# 这两类信号是 M5 安全纵深的核心可观测项：注入拦截暴涨 = 可能遭受对抗，
+# PII 脱敏激增 = 知识库/工具可能泄露了敏感字段，均需告警。
+SECURITY_INJECTION_BLOCKED = Counter(
+    "srm_security_injection_blocked_total", "检出的提示注入次数", ["reason"]
+)
+SECURITY_PII_MASKED = Counter(
+    "srm_security_pii_masked_total", "被脱敏的 PII 项数", ["type"]
+)
+
 
 # ── 打点辅助 ──────────────────────────────────────────────────────────
 
@@ -52,14 +65,18 @@ def record_http(method: str, endpoint: str, status: int, duration_s: float) -> N
     REQUEST_LATENCY.labels(endpoint=endpoint).observe(duration_s)
 
 
-def record_llm(model: str, tokens: int, duration_s: float, error: bool = False) -> None:
-    LLM_CALLS.labels(model=model or "unknown").inc()
+def record_llm(
+    model: str, tokens: int, duration_s: float, error: bool = False, phase: str | None = None
+) -> None:
+    model = model or "unknown"
+    phase = phase or "unknown"
+    LLM_CALLS.labels(model=model, phase=phase).inc()
     if tokens:
-        LLM_TOKENS.labels(model=model or "unknown").inc(tokens)
+        LLM_TOKENS.labels(model=model, phase=phase).inc(tokens)
     if duration_s:
-        LLM_LATENCY.labels(model=model or "unknown").observe(duration_s)
+        LLM_LATENCY.labels(model=model, phase=phase).observe(duration_s)
     if error:
-        LLM_ERRORS.labels(model=model or "unknown").inc()
+        LLM_ERRORS.labels(model=model, phase=phase).inc()
 
 
 def record_tool(name: str, ok: bool, duration_s: float) -> None:
@@ -81,6 +98,16 @@ def record_approval(event: str) -> None:
 
 def record_node(name: str, duration_s: float) -> None:
     NODE_LATENCY.labels(node=name).observe(duration_s)
+
+
+def record_security_injection(n: int) -> None:
+    """记录一次提示注入检出（n = 命中的规则条数）。"""
+    SECURITY_INJECTION_BLOCKED.labels(reason="detected").inc(n)
+
+
+def record_security_pii(n: int) -> None:
+    """记录被脱敏的 PII 项数。"""
+    SECURITY_PII_MASKED.labels(type="all").inc(n)
 
 
 def render() -> tuple[bytes, str]:

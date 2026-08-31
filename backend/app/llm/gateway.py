@@ -120,7 +120,7 @@ class OpenAICompatLLM:
                 messages, tools, self.base_url, self.api_key, self.model, phase=phase
             )
         except Exception as exc:
-            metrics.record_llm(self.model, 0, time.time() - t0, error=True, phase=phase)
+            metrics.record_llm(self.model or "unknown", 0, time.time() - t0, error=True, phase=phase)
             logger.warning("主模型调用失败，尝试备用模型: %s", exc)
             if self.secondary_base_url and self.secondary_api_key and self.secondary_model:
                 t1 = time.time()
@@ -141,7 +141,7 @@ class OpenAICompatLLM:
             else:
                 raise
         metrics.record_llm(
-            resp.model or self.model, resp.tokens, time.time() - t0, error=False, phase=phase
+            resp.model or self.model or "unknown", resp.tokens, time.time() - t0, error=False, phase=phase
         )
         return resp
 

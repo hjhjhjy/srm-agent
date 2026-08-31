@@ -43,6 +43,7 @@ from app.llm.gateway import get_llm
 from app.observability import metrics
 from app.observability.audit import audit_store
 from app.observability.tracing import span
+from app.security.sanitize import sanitize_dialogue, sanitize_tool_output
 from app.tools.base import ToolContext, ToolError
 from app.tools.registry import registry
 
@@ -51,8 +52,8 @@ try:  # langgraph 各版本 interrupt 导出位置不同
 except ImportError:  # pragma: no cover
     try:
         from langgraph.prebuilt import interrupt as _interrupt  # type: ignore
-    except ImportError:
-        _interrupt = None
+    except ImportError:  # pragma: no cover
+        _interrupt = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger("srm.agent")
@@ -294,7 +295,8 @@ async def router(state: dict) -> dict:
     让「它/这个/怎么申请」等省略在第二轮也能被正确路由。
     """
     q = state.get("question", "")
-    ctx = state.get("dialogue_context", "")
+    # 多轮记忆是间接注入载体：进入 LLM 前先净化（脱敏 + 隔离包装）
+    ctx = sanitize_dialogue(state.get("dialogue_context", ""))
     user_content = f"{ctx}\n\n用户问题：{q}" if ctx else q
     intent: str | None = None
     budget = state.get("budget") or Budget()
@@ -332,7 +334,7 @@ async def planner(state: dict) -> dict:
     tools = registry.schemas_for(scopes)
     plan: list[PlanStep] = []
     # 多轮指代：注入对话历史上下文（无则退化为原问题，保持单轮行为不变）
-    ctx = state.get("dialogue_context", "")
+    ctx = sanitize_dialogue(state.get("dialogue_context", ""))
     user_content = (
         f"{ctx}\n\n用户问题：{state.get('question', '')}" if ctx else state.get("question", "")
     )
@@ -376,7 +378,14 @@ async def planner(state: dict) -> dict:
         plan = _fallback_plan(state)
 
     # 二次过滤：LLM 可能幻觉出越权工具，这里再拦一道
-    plan = [p for p in plan if p.tool and registry.get(p.tool) and registry.get(p.tool).allows(scopes)]
+    filtered: list[PlanStep] = []
+    for p in plan:
+        if not p.tool:
+            continue
+        spec = registry.get(p.tool)
+        if spec is not None and spec.allows(scopes):
+            filtered.append(p)
+    plan = filtered
 
     return {
         "plan": plan,
@@ -469,25 +478,28 @@ async def executor(state: dict) -> dict:
             read_steps.append(step)
 
     async def _do_read(step: PlanStep) -> ToolCallRecord:
+        # step.tool 在入队前已过滤非空，这里断言收窄类型（PlanStep.tool 允许 None）
+        assert step.tool is not None, "只读步骤不应为空工具名"
+        tool = step.tool
         # 护栏：预算耗尽 → 强制收敛
         if budget.exhausted:
             metrics.record_guardrail(f"budget_{budget.exhausted_reason}")
             return ToolCallRecord(
                 step_id=step.step_id,
-                tool=step.tool,
+                tool=tool,
                 ok=False,
                 error=f"预算耗尽({budget.exhausted_reason})，已中止",
             )
         # 护栏：循环检测
-        if budget.is_repeating(step.tool, step.args):
+        if budget.is_repeating(tool, step.args):
             metrics.record_guardrail("loop_detected")
             return ToolCallRecord(
                 step_id=step.step_id,
-                tool=step.tool,
+                tool=tool,
                 ok=False,
                 error="检测到重复调用，判定为死循环已中止",
             )
-        rec = await _run_tool(step.tool, step.args, state, step.step_id, None)
+        rec = await _run_tool(tool, step.args, state, step.step_id, None)
         budget.consume_step()
         return rec
 
@@ -499,6 +511,7 @@ async def executor(state: dict) -> dict:
     # 写操作：取第一个挂起，等待人工审批（多写操作场景后续步骤留待下一轮，已知限制）
     if write_steps:
         step = write_steps[0]
+        assert step.tool is not None, "写操作步骤不应为空工具名"
         pa = PendingApproval(
             step_id=step.step_id,
             tool=step.tool,
@@ -633,13 +646,15 @@ async def reflector(state: dict) -> dict:
         sufficient, reason = True, "达到迭代上限，强制收敛"
     else:
         try:
+            # 工具/检索结果是不可信外部内容：送入反思 LLM 前先净化（脱敏 + 隔离）
+            results_blob = json.dumps([c.result for c in ok_calls], ensure_ascii=False)[:2000]
+            results_blob = sanitize_tool_output(results_blob)
             resp = await get_llm().achat(
                 [
                     {"role": "system", "content": REFLECTOR_SYSTEM},
                     {
                         "role": "user",
-                        "content": f"问题：{state.get('question','')}\n"
-                        f"已得结果：{json.dumps([c.result for c in ok_calls], ensure_ascii=False)[:2000]}",
+                        "content": f"问题：{state.get('question','')}\n已得结果：{results_blob}",
                     },
                 ]
             )
@@ -729,7 +744,9 @@ async def responder(state: dict) -> dict:
 
     context = _format_context(state.get("tool_calls") or [])
     answer = ""
-    ctx = state.get("dialogue_context", "")
+    # 工具结果/检索片段是首要注入载体，必须隔离包装后再喂给应答模型
+    context = sanitize_tool_output(context)
+    ctx = sanitize_dialogue(state.get("dialogue_context", ""))
     q = state.get("question", "")
     # 多轮指代：把对话历史上下文一并喂给应答模型，解决「它/这个」类省略
     user_content = (
