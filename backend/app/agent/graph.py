@@ -23,7 +23,6 @@ START → router ─┬───────────────────
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from langgraph.graph import END, StateGraph
 
@@ -134,7 +133,7 @@ async def run_agent(
     session_id: str = "",
     tenant_id: str = "",
     user_id: str = "",
-    user_scopes: Optional[list[str]] = None,
+    user_scopes: list[str] | None = None,
     app=None,
 ) -> dict:
     """便捷入口：跑完一次对话并返回终态。"""
