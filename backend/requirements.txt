@@ -1,0 +1,21 @@
+# ── 运行时 ──────────────────────────────────────────────────────────
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# 编排与模型抽象
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# HTTP（真实 LLM 调用时使用，离线环境可不装）
+httpx>=0.27
+
+# 可观测性（M3 接入）
+prometheus-client>=0.20
+
+# ── 开发 / 测试 ──────────────────────────────────────────────────────
+pytest>=8.2
+pytest-asyncio>=0.23
+ruff>=0.6
+mypy>=1.11
