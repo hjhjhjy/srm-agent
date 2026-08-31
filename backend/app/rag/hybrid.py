@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from app.rag.backend import (
     InMemoryBM25Backend,
     KBHit,
     RetrievalBackend,
-    tokenize,
 )
 from app.rag.embeddings import Embedder, OfflineHashEmbedder
 
@@ -34,7 +33,7 @@ FLOW_RE = re.compile(r"QS_SRM_[A-Z0-9_]+", re.IGNORECASE)
 # 统一加固定权重」而淹没正文 subflow（v1 的 +0.12/+0.22 在 RRF 小分值尺度下会失控）。
 # 这里的正则刻意只保留「文档/通知」本身的强信号词，去掉竞价/招标/确认/订单/样/收到等
 # 过于宽泛的流程词——否则「参与竞价」「接收订单」这类问题会误触发 form/message 提权。
-_INTENT_RULES: List[tuple[re.Pattern, str, float]] = [
+_INTENT_RULES: list[tuple[re.Pattern, str, float]] = [
     (re.compile(r"文件|材料|资料|表单|清单|证件|证书|执照|身份证|营业执照|首营|协议"), "form", 0.18),
     (re.compile(r"通知|消息|短信|查收|提醒|告知|函|发送|收取|发票"), "message", 0.15),
     (re.compile(r"预警|到期|超时|逾期|临期|提前|过期"), "warning", 0.15),
@@ -48,7 +47,7 @@ class HybridBackend(RetrievalBackend):
 
     def __init__(
         self,
-        embedder: Optional[Embedder] = None,
+        embedder: Embedder | None = None,
         *,
         k1: float = 1.5,
         b: float = 0.75,
@@ -60,8 +59,8 @@ class HybridBackend(RetrievalBackend):
     ) -> None:
         self._bm25 = InMemoryBM25Backend(k1=k1, b=b)
         self._embedder = embedder or OfflineHashEmbedder()
-        self._hits: List[KBHit] = []
-        self._vecs: List[List[float]] = []
+        self._hits: list[KBHit] = []
+        self._vecs: list[list[float]] = []
         self._by_id: dict[str, int] = {}
         self._rrf_k = rrf_k
         # 稠密路权重：离线 hash embedder 语义噪声较大，作为「语义纠偏」而非主信号，
@@ -89,9 +88,9 @@ class HybridBackend(RetrievalBackend):
         query: str,
         *,
         top_k: int = 4,
-        flow_code: Optional[str] = None,
+        flow_code: str | None = None,
         tenant_id: str = "",
-    ) -> List[KBHit]:
+    ) -> list[KBHit]:
         if not self._hits:
             return []
 
@@ -105,7 +104,7 @@ class HybridBackend(RetrievalBackend):
 
         # ── 稠密路 ──
         q_vec = self._embedder.embed([query])[0]
-        dense: List[tuple[int, float]] = []
+        dense: list[tuple[int, float]] = []
         for i, hit in enumerate(self._hits):
             if not self._tenant_ok(hit, tenant_id):
                 continue
@@ -168,7 +167,7 @@ class HybridBackend(RetrievalBackend):
         # 真正相关的特定 subflow（如 PO_0008/0010、RM_0002、SM_0004/0005、RD_0001）。
         # 惩罚采用乘性（fused[c] * (1 - λ*max_sim)），使相似度惩罚落在 fused 同一量纲，
         # 既去冗余又不会把高相关项一刀切掉。
-        selected: List[str] = []
+        selected: list[str] = []
         pool = sorted(fused, key=lambda c: -fused[c])
         while len(selected) < top_k and pool:
             if not selected:
@@ -186,8 +185,7 @@ class HybridBackend(RetrievalBackend):
                         dot = sum(
                             a * b for a, b in zip(self._vecs[ci], self._vecs[si])
                         )
-                        if dot > max_sim:
-                            max_sim = dot
+                        max_sim = max(max_sim, dot)
                     s = fused[c] * (1.0 - self._mmr_lambda * max_sim)
                     if best_score is None or s > best_score:
                         best_score = s
@@ -195,7 +193,7 @@ class HybridBackend(RetrievalBackend):
             selected.append(best)
             pool.remove(best)
 
-        out: List[KBHit] = []
+        out: list[KBHit] = []
         for cid in selected:
             h = self._hits[self._by_id[cid]]
             out.append(KBHit(**{**h.model_dump(), "score": round(fused[cid], 4)}))
