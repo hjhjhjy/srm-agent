@@ -288,14 +288,22 @@ def _audit(state: dict, action: str, approver: str | None = None, **kw) -> Audit
 
 @traced("router")
 async def router(state: dict) -> dict:
-    """意图路由：LLM 语义分类优先，规则兜底。"""
+    """意图路由：LLM 语义分类优先，规则兜底。
+
+    多轮指代：把 ``dialogue_context``（来自会话记忆）拼到用户问题前，
+    让「它/这个/怎么申请」等省略在第二轮也能被正确路由。
+    """
     q = state.get("question", "")
+    ctx = state.get("dialogue_context", "")
+    user_content = f"{ctx}\n\n用户问题：{q}" if ctx else q
     intent: str | None = None
+    budget = state.get("budget") or Budget()
     try:
         resp = await get_llm().achat(
-            [{"role": "system", "content": ROUTER_SYSTEM}, {"role": "user", "content": q}]
+            [{"role": "system", "content": ROUTER_SYSTEM}, {"role": "user", "content": user_content}]
         )
         intent = _safe_json(resp.content).get("intent")
+        budget.consume_tokens(resp.tokens)
     except Exception as exc:
         logger.warning("LLM 路由失败，回落规则路由: %s", exc)
 
@@ -304,6 +312,7 @@ async def router(state: dict) -> dict:
 
     return {
         "intent": intent,
+        "budget": budget,
         "trace": state.get("trace", []) + [{"node": "router", "intent": intent}],
     }
 
@@ -322,14 +331,20 @@ async def planner(state: dict) -> dict:
     # 工具级授权第一道闸：LLM 只看得到有权调用的工具
     tools = registry.schemas_for(scopes)
     plan: list[PlanStep] = []
+    # 多轮指代：注入对话历史上下文（无则退化为原问题，保持单轮行为不变）
+    ctx = state.get("dialogue_context", "")
+    user_content = (
+        f"{ctx}\n\n用户问题：{state.get('question', '')}" if ctx else state.get("question", "")
+    )
     try:
         resp = await get_llm().achat(
             [
                 {"role": "system", "content": PLANNER_SYSTEM},
-                {"role": "user", "content": state.get("question", "")},
+                {"role": "user", "content": user_content},
             ],
             tools=tools,
         )
+        budget.consume_tokens(resp.tokens)
         if resp.tool_calls:
             plan = [
                 PlanStep(
@@ -365,6 +380,7 @@ async def planner(state: dict) -> dict:
 
     return {
         "plan": plan,
+        "budget": budget,
         "trace": state.get("trace", []) + [{"node": "planner", "steps": [p.tool for p in plan]}],
     }
 
@@ -627,6 +643,7 @@ async def reflector(state: dict) -> dict:
                     },
                 ]
             )
+            budget.consume_tokens(resp.tokens)
             parsed = _safe_json(resp.content)
             if "sufficient" in parsed:
                 sufficient = bool(parsed["sufficient"])
@@ -638,6 +655,7 @@ async def reflector(state: dict) -> dict:
         "iteration": iteration,
         "sufficient": sufficient,
         "reflection": reason,
+        "budget": budget,
         "trace": state.get("trace", [])
         + [{"node": "reflector", "sufficient": sufficient, "iteration": iteration}],
     }
@@ -711,14 +729,19 @@ async def responder(state: dict) -> dict:
 
     context = _format_context(state.get("tool_calls") or [])
     answer = ""
+    ctx = state.get("dialogue_context", "")
+    q = state.get("question", "")
+    # 多轮指代：把对话历史上下文一并喂给应答模型，解决「它/这个」类省略
+    user_content = (
+        f"参考资料：\n{context}\n\n对话历史上下文：\n{ctx}\n\n用户问题：{q}"
+        if ctx
+        else f"参考资料：\n{context}\n\n用户问题：{q}"
+    )
     try:
         resp = await get_llm().achat(
             [
                 {"role": "system", "content": RESPONDER_SYSTEM},
-                {
-                    "role": "user",
-                    "content": f"参考资料：\n{context}\n\n用户问题：{state.get('question','')}",
-                },
+                {"role": "user", "content": user_content},
             ]
         )
         answer = (resp.content or "").strip()
