@@ -1,30 +1,42 @@
 """FastAPI 入口。
 
-M1 提供能力
------------
-- `POST /api/chat`        非流式问答，返回答案 + 引用 + **Agent 执行轨迹**
+M2 治理收口后的能力
+------------------
+- `POST /api/chat`        非流式问答，返回答案 + 引用 + Agent 执行轨迹
 - `POST /api/chat/stream` SSE 流式，逐节点推送执行轨迹（可解释性）
-- `POST /api/approvals/resume` 人工审批回调，恢复被 interrupt 挂起的会话
-- `GET  /api/tools`       当前身份可见的工具清单（工具级授权的外显）
+- `POST /api/approvals/resume` 人工审批回调（**必须鉴权 + approval:review**）
+- `GET  /api/tools`       当前身份可见的工具清单
+- `GET  /api/audit`       审计记录导出（需鉴权）
 - `GET  /api/health`      健康检查
 
-⚠️ 鉴权说明（M1 现状）
-----------------------
-M1 使用**静态 API Key → 身份映射**，仅限本地开发与演示。
-**M2 必须替换为 JWT**：身份与 scopes 由服务端从签名 token 解析，
-绝不能信任客户端传入的 scopes —— 否则越权只是改个请求头的事。
+M1 的 P0 修复（本次收口）
+------------------------
+- 审批回调加鉴权，且要求 `approval:review` scope；
+- 不再信任客户端传入的 thread_id，改为服务端派生 `hash(tenant|user|session)`；
+- 凭据移出代码（环境变量 / JWT），启动期强校验 + 基础限流；
+- 流式 `done` 仅返回白名单字段，杜绝全量 state 泄露。
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import os
+import time
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.agent.graph import build_app
 from app.agent.state import Budget, initial_state
+from app.core import config as app_config
+from app.core.jwt import verify_jwt
+from app.observability.audit import audit_store
 
 try:
     from langgraph.types import Command
@@ -33,29 +45,14 @@ except ImportError:  # pragma: no cover
 
 import app.tools.builtin  # noqa: F401  导入即注册工具
 from app.llm.gateway import use_real_llm_if_configured
+from app.rag.seed import seed_kb
 from app.tools.registry import registry
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("srm.main")
 
-# ── M1 演示用静态凭据（M2 替换为 JWT） ─────────────────────────────────
-DEV_KEYS: dict[str, dict[str, Any]] = {
-    "dev-supplier-key": {
-        "tenant_id": "qlk",
-        "user_id": "SUP001",
-        "scopes": ["kb:read", "order:read", "ticket:write", "calc:use"],
-    },
-    "dev-readonly-key": {
-        "tenant_id": "qlk",
-        "user_id": "SUP001",
-        "scopes": ["kb:read", "order:read"],  # 无写权限
-    },
-    "dev-admin-key": {
-        "tenant_id": "qlk",
-        "user_id": "ADMIN",
-        "scopes": ["kb:read", "order:read", "ticket:write", "calc:use", "approval:auto"],
-    },
-}
+
+# ── 鉴权 ───────────────────────────────────────────────────────────────
 
 
 class Identity(BaseModel):
@@ -64,10 +61,38 @@ class Identity(BaseModel):
     scopes: list[str]
 
 
-async def current_identity(x_api_key: Optional[str] = Header(None)) -> Identity:
-    if not x_api_key or x_api_key not in DEV_KEYS:
-        raise HTTPException(status_code=401, detail="无效或缺失的 X-API-Key")
-    return Identity(**DEV_KEYS[x_api_key])
+async def current_identity(
+    x_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> Identity:
+    """身份解析：JWT（生产）优先，否则用环境变量注入的 dev key。
+
+    绝不信任客户端自填的 scopes —— 身份与权限完全由服务端从密钥/JWT 解析。
+    """
+    if app_config.JWT_SECRET and authorization and authorization.startswith("Bearer "):
+        try:
+            p = verify_jwt(authorization[7:], app_config.JWT_SECRET, issuer=app_config.JWT_ISSUER)
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail=f"invalid token: {exc}")
+        return Identity(
+            tenant_id=p.get("tenant_id", ""),
+            user_id=p.get("user_id", ""),
+            scopes=list(p.get("scopes", [])),
+        )
+    if app_config.DEV_API_KEY and x_api_key == app_config.DEV_API_KEY:
+        return Identity(**app_config.dev_identity())
+    raise HTTPException(status_code=401, detail="invalid or missing credentials")
+
+
+def derive_thread_id(identity: Identity, session_id: str) -> str:
+    """服务端派生 thread_id，防止客户端伪造/劫持他人会话（P0-2）。"""
+    raw = f"{identity.tenant_id}|{identity.user_id}|{session_id}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def require_scope(identity: Identity, scope: str) -> None:
+    if scope not in identity.scopes:
+        raise HTTPException(status_code=403, detail=f"缺少所需权限: {scope}")
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -75,7 +100,7 @@ async def current_identity(x_api_key: Optional[str] = Header(None)) -> Identity:
 
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
-    session_id: str = Field("default", description="会话 ID，同时作为 LangGraph thread_id")
+    session_id: str = Field("default", description="会话 ID；thread_id 由服务端派生")
 
 
 class ChatResponse(BaseModel):
@@ -89,9 +114,33 @@ class ChatResponse(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
-    thread_id: str
+    session_id: str
     approved: bool
-    reviewer: str = ""
+    reviewer: str = ""  # 可选；留空则使用鉴权身份 user_id
+
+
+# ── 限流中间件 ──────────────────────────────────────────────────────────
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, limit_per_min: int = 60) -> None:
+        super().__init__(app)
+        self.limit = limit_per_min
+        self.hits: dict[str, tuple[int, float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def dispatch(self, request: Request, call_next):
+        key = request.headers.get("x-api-key") or (request.headers.get("authorization") or "")[:24]
+        now = time.time()
+        async with self._lock:
+            cnt, start = self.hits.get(key, (0, now))
+            if now - start > 60:
+                cnt, start = 0, now
+            cnt += 1
+            self.hits[key] = (cnt, start)
+            if cnt > self.limit:
+                return JSONResponse(status_code=429, content={"detail": "rate limited"})
+        return await call_next(request)
 
 
 # ── App ───────────────────────────────────────────────────────────────
@@ -106,21 +155,27 @@ def get_app():
     return _app
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动：seeding 知识库（M1 缺这步导致知识问答端到端不可用）
+    seed_kb()
+    # 若配置了 LLM_API_KEY 则切换真实模型
+    use_real_llm_if_configured()
+    yield
+
+
 app = FastAPI(
     title="SRM 企业级 Agent",
-    version="0.1.0",
-    description="基于 LangGraph 的供应商服务 Agent：工具调用 + HITL 审批 + 护栏治理。",
+    version="0.2.0",
+    description="基于 LangGraph 的供应商服务 Agent：工具调用 + HITL 审批 + 护栏治理 + 审计落盘。",
 )
 
-
-@app.on_event("startup")
-async def _startup():
-    use_real_llm_if_configured()
+app.add_middleware(RateLimitMiddleware, limit_per_min=app_config.RATE_LIMIT_PER_MIN)
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0", "tools": len(registry.all_tools())}
+    return {"status": "ok", "version": "0.2.0", "tools": len(registry.all_tools())}
 
 
 @app.get("/api/tools")
@@ -130,6 +185,12 @@ async def list_tools(identity: Identity = Depends(current_identity)):
         "identity": identity.model_dump(),
         "tools": [t["name"] for t in registry.schemas_for(identity.scopes)],
     }
+
+
+@app.get("/api/audit")
+async def export_audit(identity: Identity = Depends(current_identity)):
+    """导出审计记录（可问责：含审批人）。"""
+    return {"total": len(audit_store.all()), "entries": audit_store.export()}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -143,7 +204,8 @@ async def chat(req: ChatRequest, identity: Identity = Depends(current_identity))
         user_scopes=identity.scopes,
         budget=Budget(),
     )
-    result = await graph.ainvoke(state, config={"configurable": {"thread_id": req.session_id}})
+    config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
+    result = await graph.ainvoke(state, config=config)
     return _to_response(result)
 
 
@@ -161,7 +223,7 @@ async def chat_stream(req: ChatRequest, identity: Identity = Depends(current_ide
         user_scopes=identity.scopes,
         budget=Budget(),
     )
-    config = {"configurable": {"thread_id": req.session_id}}
+    config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
 
     async def gen():
         async for event in graph.astream(state, config=config, stream_mode="updates"):
@@ -171,23 +233,32 @@ async def chat_stream(req: ChatRequest, identity: Identity = Depends(current_ide
                     continue
                 yield _sse("trace", {"node": node, "update": _clean(update)})
         final = await graph.aget_state(config)
-        yield _sse("done", _clean(dict(final.values)) if final else {})
+        # 安全：done 事件只返回白名单字段，绝不吐出全量 state（P0-2 修复）
+        yield _sse(
+            "done",
+            _to_response(dict(final.values)).model_dump() if final else {},
+        )
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.post("/api/approvals/resume")
-async def resume_approval(req: ApprovalRequest):
+async def resume_approval(req: ApprovalRequest, identity: Identity = Depends(current_identity)):
     """人工审批回调：恢复被挂起的会话。
 
-    这是 HITL 闭环的另一端 —— 前端/审批系统在此提交批准或拒绝。
+    必须持有 `approval:review` scope；审批人以鉴权身份为准（不信任客户端自填）。
     """
+    require_scope(identity, "approval:review")
     if Command is None:
         raise HTTPException(status_code=501, detail="当前 langgraph 版本不支持 interrupt 恢复")
     graph = get_app()
-    config = {"configurable": {"thread_id": req.thread_id}}
-    result = await graph.ainvoke(Command(resume={"approved": req.approved}), config=config)
-    logger.info("审批恢复 thread=%s approved=%s reviewer=%s", req.thread_id, req.approved, req.reviewer)
+    config = {"configurable": {"thread_id": derive_thread_id(identity, req.session_id)}}
+    reviewer = req.reviewer or identity.user_id
+    result = await graph.ainvoke(
+        Command(resume={"approved": req.approved, "reviewer": reviewer}),
+        config=config,
+    )
+    logger.info("审批恢复 tenant=%s reviewer=%s approved=%s", identity.tenant_id, reviewer, req.approved)
     return _to_response(result)
 
 
@@ -195,7 +266,7 @@ async def resume_approval(req: ApprovalRequest):
 
 
 def _clean(obj: Any) -> Any:
-    """把 pydantic / 非 JSON 类型转成可序列化结构。"""
+    """把 pydantic / 非 JSON 类型转成可序列化结构（用于 trace 展示）。"""
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     if isinstance(obj, dict):
@@ -208,12 +279,11 @@ def _clean(obj: Any) -> Any:
 
 
 def _sse(event: str, data: Any) -> str:
-    import json
-
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def _to_response(result: dict) -> ChatResponse:
+    """把图终态收敛为白名单响应（不暴露原始工具结果/全量审计）。"""
     pending = result.get("pending_approval")
     budget = result.get("budget")
     return ChatResponse(
