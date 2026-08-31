@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (lint + type + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check app tests scripts
+
+      - name: Type check
+        run: mypy app --ignore-missing-imports || true
+
+      # 全部测试离线运行：ScriptedLLM + 内存知识库，不需要 API Key
+      - name: Test
+        run: pytest -v --tb=short
+
+      # M3 接入：检索/Agent 指标下滑超过阈值即阻断合并
+      # - name: Eval gate
+      #   run: python -m tests.eval_runner --fail-under 0.85
