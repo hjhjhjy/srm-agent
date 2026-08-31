@@ -16,12 +16,12 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from typing import List, Optional, Protocol
+from typing import Protocol
 
 
-def tokenize(text: str) -> List[str]:
+def tokenize(text: str) -> list[str]:
     """中文二元切分 + 英文数字整词（与 backend.py 一致，保证可复现）。"""
-    toks: List[str] = []
+    toks: list[str] = []
     for seg in re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9_]+", text):
         if "\u4e00" <= seg[0] <= "\u9fff":
             if len(seg) == 1:
@@ -36,9 +36,9 @@ def tokenize(text: str) -> List[str]:
 class Embedder(Protocol):
     dim: int
 
-    def embed(self, texts: List[str]) -> List[List[float]]: ...
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
 
-    def ensure_ready(self, corpus: Optional[List[str]] = None) -> None: ...
+    def ensure_ready(self, corpus: list[str] | None = None) -> None: ...
 
 
 class OfflineHashEmbedder:
@@ -54,10 +54,10 @@ class OfflineHashEmbedder:
         self.dim = dim
         self._normalize = normalize
 
-    def ensure_ready(self, corpus: Optional[List[str]] = None) -> None:
+    def ensure_ready(self, corpus: list[str] | None = None) -> None:
         return
 
-    def _vector(self, text: str) -> List[float]:
+    def _vector(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
         for tok in tokenize(text):
             h = int(hashlib.md5(tok.encode("utf-8")).hexdigest(), 16)
@@ -68,7 +68,7 @@ class OfflineHashEmbedder:
                 vec = [v / norm for v in vec]
         return vec
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         return [self._vector(t) for t in texts]
 
 
@@ -90,9 +90,9 @@ class BGEEmbedder:
         self.model = SentenceTransformer(model_path)
         self.dim = self.model.get_sentence_embedding_dimension()
 
-    def ensure_ready(self, corpus: Optional[List[str]] = None) -> None:
+    def ensure_ready(self, corpus: list[str] | None = None) -> None:
         return
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         vecs = self.model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return [list(map(float, v)) for v in vecs]
