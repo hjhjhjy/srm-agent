@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.tools.builtin  # noqa: F401  触发工具注册
-from app.agent.graph import build_app
+from app.agent.graph import build_app, run_agent
 from app.agent.state import Budget, initial_state
 from app.llm.gateway import ScriptedLLM, set_llm
 from app.rag.seed import seed_kb
@@ -100,6 +100,27 @@ async def main() -> None:
     print(f"写权限用户可见工具 : {[t['name'] for t in registry.schemas_for(SCOPES_FULL)]}")
     print(f"只读用户可见工具   : {[t['name'] for t in registry.schemas_for(SCOPES_RO)]}")
     print("\n结论：只读用户在规划阶段就看不到 ticket_create，从源头杜绝越权。\n")
+
+    # ── 场景 4：多轮指代（对话记忆自动注入） ──────────────────────
+    _banner("场景 4 · 多轮指代（会话记忆自动注入 dialogue_context）")
+    r1 = await run_agent(
+        "如何注册成为青山利康供应商？",
+        session_id="demo-4",
+        tenant_id="qlk",
+        user_id="SUP001",
+        user_scopes=SCOPES_FULL,
+    )
+    print(f"[第1轮] 答案片段：{(r1.get('answer') or '')[:80]}...")
+    r2 = await run_agent(
+        "它具体需要准备哪些材料？",
+        session_id="demo-4",
+        tenant_id="qlk",
+        user_id="SUP001",
+        user_scopes=SCOPES_FULL,
+    )
+    print(f"[第2轮] 注入的 dialogue_context：\n{(r2.get('dialogue_context') or '')[:200]}")
+    print(f"[第2轮] 答案片段：{(r2.get('answer') or '')[:80]}...")
+    print("\n说明：第二轮「它」的指代，由会话记忆注入的 dialogue_context 消解。\n")
 
     _banner("演示结束")
     print("提示：配置 LLM_API_KEY 环境变量后，路由/规划/应答将切换为真实模型。")
