@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Annotated, Any, Literal, Optional, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, Field
@@ -31,7 +31,7 @@ class PlanStep(BaseModel):
 
     step_id: int
     description: str
-    tool: Optional[str] = None
+    tool: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[int] = Field(default_factory=list)
 
@@ -44,11 +44,11 @@ class ToolCallRecord(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     ok: bool = False
     result: Any = None
-    error: Optional[str] = None
+    error: str | None = None
     latency_ms: int = 0
     requires_approval: bool = False
-    approved: Optional[bool] = None
-    idempotency_key: Optional[str] = None
+    approved: bool | None = None
+    idempotency_key: str | None = None
 
 
 class Budget(BaseModel):
@@ -73,7 +73,7 @@ class Budget(BaseModel):
         return int((time.time() - self.started_at) * 1000)
 
     @property
-    def exhausted_reason(self) -> Optional[str]:
+    def exhausted_reason(self) -> str | None:
         if self.steps_used >= self.max_steps:
             return "step_budget"
         if self.tokens_used >= self.max_tokens:
@@ -118,12 +118,12 @@ class AuditEntry(BaseModel):
     user_id: str = ""
     session_id: str = ""
     action: str = ""
-    tool: Optional[str] = None
+    tool: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     outcome: str = ""
-    approved: Optional[bool] = None
-    approver: Optional[str] = None
-    idempotency_key: Optional[str] = None
+    approved: bool | None = None
+    approver: str | None = None
+    idempotency_key: str | None = None
 
 
 class PendingApproval(BaseModel):
@@ -150,9 +150,9 @@ class AgentState(TypedDict):
     plan: list[PlanStep]
     # ---- 执行 ----
     tool_calls: list[ToolCallRecord]
-    pending_approval: Optional[PendingApproval]
+    pending_approval: PendingApproval | None
     # HITL 三态：None=待审批 / True=已批准 / False=已拒绝
-    approval_decision: Optional[bool]
+    approval_decision: bool | None
     # ---- 反思 ----
     iteration: int
     sufficient: bool
@@ -172,8 +172,8 @@ def initial_state(
     session_id: str = "",
     tenant_id: str = "",
     user_id: str = "",
-    user_scopes: Optional[list[str]] = None,
-    budget: Optional[Budget] = None,
+    user_scopes: list[str] | None = None,
+    budget: Budget | None = None,
 ) -> AgentState:
     """构造初始状态。集中在这里是为了保证每个字段都有默认值，
     避免各调用方漏字段导致图运行时 KeyError。"""
