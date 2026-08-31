@@ -9,19 +9,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.agent.graph import build_app  # noqa: E402
-from app.agent.state import Budget, initial_state  # noqa: E402
-from app.rag.seed import seed_kb  # noqa: E402
-
-import app.tools.builtin  # noqa: E402,F401  触发工具注册
-from app.llm.gateway import ScriptedLLM, set_llm  # noqa: E402
-from app.tools.builtin.ticket_create import reset_idempotency_store  # noqa: E402
+import app.tools.builtin  # noqa: F401  触发工具注册
+from app.agent.graph import build_app
+from app.agent.state import Budget, initial_state
+from app.llm.gateway import ScriptedLLM, set_llm
+from app.rag.seed import seed_kb
+from app.tools.builtin.ticket_create import reset_idempotency_store
 
 try:
     from langgraph.types import Command
