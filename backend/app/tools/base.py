@@ -13,8 +13,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -60,7 +61,7 @@ class ToolSpec:
     idempotent: bool = True
     timeout_ms: int = 10_000
     max_retries: int = 2
-    fn: Optional[Callable[..., Any]] = None
+    fn: Callable[..., Any] | None = None
 
     @property
     def requires_approval(self) -> bool:
