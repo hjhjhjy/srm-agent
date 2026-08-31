@@ -6,7 +6,7 @@
    否则 CI 里全是 flaky test，这是 LLM 应用工程化的第一道门槛。
 2. **统一返回结构化结果**：`LLMResponse` 带 `tool_calls` 与 `tokens`，
    token 直接喂给预算护栏做成本控制。
-3. **降级链**：主模型失败 → 备模型 → 兜底空响应（由编排层降级为检索直答）。
+3. **降级链**：主模型失败 → 备用模型（配置 `LLM_*_SECONDARY`）→ 仍失败则由编排层降级为检索直答。
 
 M1 默认 `ScriptedLLM`（离线可跑）；配置 API Key 后自动切换 `OpenAICompatLLM`。
 """
@@ -73,10 +73,17 @@ class OpenAICompatLLM:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        secondary_base_url: Optional[str] = None,
+        secondary_api_key: Optional[str] = None,
+        secondary_model: Optional[str] = None,
     ):
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
         self.api_key = api_key or os.getenv("LLM_API_KEY", "")
         self.model = model or os.getenv("LLM_MODEL", "deepseek-chat")
+        # 备用模型（可选）：主模型失败时的降级目标
+        self.secondary_base_url = secondary_base_url or os.getenv("LLM_BASE_URL_SECONDARY", "")
+        self.secondary_api_key = secondary_api_key or os.getenv("LLM_API_KEY_SECONDARY", "")
+        self.secondary_model = secondary_model or os.getenv("LLM_MODEL_SECONDARY", "")
 
     @property
     def available(self) -> bool:
@@ -85,19 +92,32 @@ class OpenAICompatLLM:
     async def achat(self, messages, tools=None) -> LLMResponse:
         if not self.available:
             raise RuntimeError("未配置 LLM_API_KEY")
+        try:
+            return await self._call(messages, tools, self.base_url, self.api_key, self.model)
+        except Exception as exc:
+            logger.warning("主模型调用失败，尝试备用模型: %s", exc)
+            if self.secondary_base_url and self.secondary_api_key and self.secondary_model:
+                return await self._call(
+                    messages,
+                    tools,
+                    self.secondary_base_url,
+                    self.secondary_api_key,
+                    self.secondary_model,
+                )
+            raise
 
+    async def _call(self, messages, tools, base_url, api_key, model) -> LLMResponse:
         import httpx  # 延迟导入，避免离线环境强制依赖
 
-        payload: dict[str, Any] = {"model": self.model, "messages": messages}
+        payload: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
-            payload["tools"] = [
-                {"type": "function", "function": t} for t in tools
-            ]
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=60) as client:
+            payload["tools"] = [{"type": "function", "function": t} for t in tools]
+        # 单调用超时 25s，低于 30s 墙钟预算，避免单次 LLM 调用就耗尽整个请求预算
+        async with httpx.AsyncClient(base_url=base_url, timeout=25) as client:
             r = await client.post(
                 "/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers={"Authorization": f"Bearer {api_key}"},
             )
             r.raise_for_status()
             data = r.json()
@@ -116,7 +136,7 @@ class OpenAICompatLLM:
             content=msg.get("content") or "",
             tool_calls=calls,
             tokens=int(usage.get("total_tokens") or 0),
-            model=self.model,
+            model=model,
         )
 
 
