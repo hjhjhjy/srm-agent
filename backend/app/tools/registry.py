@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import inspect
 import logging
-import time
-from typing import Any, Optional
+from typing import Any
 
 from app.tools.base import (
     ToolContext,
     ToolError,
-    ToolNotPermitted,
     ToolNotFound,
+    ToolNotPermitted,
     ToolSpec,
 )
 
@@ -49,7 +48,7 @@ class ToolRegistry:
         *,
         description: str,
         args_model: type,
-        name: Optional[str] = None,
+        name: str | None = None,
         required_scopes: tuple[str, ...] = (),
         side_effect: bool = False,
         idempotent: bool = True,
@@ -87,7 +86,7 @@ class ToolRegistry:
 
         return deco
 
-    def get(self, name: str) -> Optional[ToolSpec]:
+    def get(self, name: str) -> ToolSpec | None:
         return self._tools.get(name)
 
     def all_tools(self) -> list[ToolSpec]:
