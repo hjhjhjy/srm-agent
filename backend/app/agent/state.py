@@ -122,6 +122,7 @@ class AuditEntry(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     outcome: str = ""
     approved: Optional[bool] = None
+    approver: Optional[str] = None
     idempotency_key: Optional[str] = None
 
 
