@@ -146,6 +146,8 @@ class AgentState(TypedDict):
     user_scopes: list[str]
     # ---- 路由 ----
     intent: str
+    # 指代消解上下文：router 从多轮历史提炼，供 planner/responder 理解省略/指代
+    dialogue_context: str
     # ---- 规划 ----
     plan: list[PlanStep]
     # ---- 执行 ----
@@ -174,6 +176,7 @@ def initial_state(
     user_id: str = "",
     user_scopes: list[str] | None = None,
     budget: Budget | None = None,
+    dialogue_context: str = "",
 ) -> AgentState:
     """构造初始状态。集中在这里是为了保证每个字段都有默认值，
     避免各调用方漏字段导致图运行时 KeyError。"""
@@ -187,6 +190,7 @@ def initial_state(
         user_id=user_id,
         user_scopes=user_scopes or [],
         intent="",
+        dialogue_context=dialogue_context,
         plan=[],
         tool_calls=[],
         pending_approval=None,
