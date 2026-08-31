@@ -22,7 +22,7 @@ def verify_jwt(token: str, secret: str, issuer: str = "srm-agent", max_skew: int
     parts = token.split(".")
     if len(parts) != 3:
         raise ValueError("malformed token")
-    signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
+    signing_input = f"{parts[0]}.{parts[1]}".encode()
     expected = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
     provided = _b64decode(parts[2])
     if not hmac.compare_digest(expected, provided):
