@@ -20,12 +20,14 @@ HITL 审批门（本项目治理核心）
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
+import inspect
 import json
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.messages import AIMessage
 
@@ -38,7 +40,9 @@ from app.agent.state import (
     ToolCallRecord,
 )
 from app.llm.gateway import get_llm
+from app.observability import metrics
 from app.observability.audit import audit_store
+from app.observability.tracing import span
 from app.tools.base import ToolContext, ToolError
 from app.tools.registry import registry
 
@@ -85,6 +89,39 @@ GREETING_KEYWORDS = ["你好", "您好", "hi", "hello", "在吗", "谢谢", "再
 BIZ_KEYWORDS = ["订单", "发票", "对账", "金额", "合计", "多少钱", "算"]
 
 
+def traced(name: str):
+    """节点级 span + 节点耗时指标装饰器（同步/异步节点通用）。
+
+    用 ``functools.wraps`` 保留原函数签名，使 LangGraph 仍能按原签名调用节点；
+    span 通过 contextvars 自动串成调用树（trace_id 由请求中间件注入）。
+    """
+
+    def deco(fn):
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def awrapper(state):
+                t0 = time.time()
+                with span(name, tenant_id=(state or {}).get("tenant_id", "")):
+                    result = await fn(state)
+                metrics.record_node(name, time.time() - t0)
+                return result
+
+        else:
+
+            @functools.wraps(fn)
+            def swrapper(state):
+                t0 = time.time()
+                with span(name, tenant_id=(state or {}).get("tenant_id", "")):
+                    result = fn(state)
+                metrics.record_node(name, time.time() - t0)
+                return result
+
+        return awrapper if inspect.iscoroutinefunction(fn) else swrapper
+
+    return deco
+
+
 # ── 工具函数 ──────────────────────────────────────────────────────────
 
 
@@ -92,7 +129,7 @@ def _safe_json(text: str) -> dict:
     """从 LLM 输出中稳健提取 JSON（容忍 ```json 围栏与前后废话）。"""
     if not text:
         return {}
-    cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
     try:
         return json.loads(cleaned)
     except Exception:
@@ -172,7 +209,7 @@ async def _run_tool(
     args: dict[str, Any],
     state: dict,
     step_id: int,
-    idem_key: Optional[str],
+    idem_key: str | None,
 ) -> ToolCallRecord:
     """执行单个工具：超时 + 指数退避重试。
 
@@ -190,13 +227,13 @@ async def _run_tool(
         idempotency_key=idem_key or "",
     )
     t0 = time.time()
-    last_err: Optional[str] = None
+    last_err: str | None = None
     for attempt in range(spec.max_retries + 1):
         try:
             result = await asyncio.wait_for(
                 registry.invoke(name, args, ctx), timeout=spec.timeout_ms / 1000
             )
-            return ToolCallRecord(
+            rec = ToolCallRecord(
                 step_id=step_id,
                 tool=name,
                 args=args,
@@ -205,11 +242,13 @@ async def _run_tool(
                 latency_ms=int((time.time() - t0) * 1000),
                 idempotency_key=idem_key,
             )
+            metrics.record_tool(name, rec.ok, rec.latency_ms / 1000.0)
+            return rec
         except asyncio.TimeoutError:
             last_err = f"工具超时({spec.timeout_ms}ms)"
         except ToolError as exc:
             last_err = str(exc)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_err = f"工具异常: {exc}"
 
         # 非幂等工具不重试，避免重复副作用
@@ -217,7 +256,7 @@ async def _run_tool(
             break
         if attempt < spec.max_retries:
             await asyncio.sleep(0.05 * (2**attempt))
-    return ToolCallRecord(
+    rec = ToolCallRecord(
         step_id=step_id,
         tool=name,
         args=args,
@@ -226,9 +265,11 @@ async def _run_tool(
         latency_ms=int((time.time() - t0) * 1000),
         idempotency_key=idem_key,
     )
+    metrics.record_tool(name, rec.ok, rec.latency_ms / 1000.0)
+    return rec
 
 
-def _audit(state: dict, action: str, approver: Optional[str] = None, **kw) -> AuditEntry:
+def _audit(state: dict, action: str, approver: str | None = None, **kw) -> AuditEntry:
     entry = AuditEntry(
         tenant_id=state.get("tenant_id", ""),
         user_id=state.get("user_id", ""),
@@ -245,16 +286,17 @@ def _audit(state: dict, action: str, approver: Optional[str] = None, **kw) -> Au
 # ── 节点 ──────────────────────────────────────────────────────────────
 
 
+@traced("router")
 async def router(state: dict) -> dict:
     """意图路由：LLM 语义分类优先，规则兜底。"""
     q = state.get("question", "")
-    intent: Optional[str] = None
+    intent: str | None = None
     try:
         resp = await get_llm().achat(
             [{"role": "system", "content": ROUTER_SYSTEM}, {"role": "user", "content": q}]
         )
         intent = _safe_json(resp.content).get("intent")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("LLM 路由失败，回落规则路由: %s", exc)
 
     if intent not in ("chitchat", "rag_qa", "tool_task", "human_handoff"):
@@ -266,6 +308,7 @@ async def router(state: dict) -> dict:
     }
 
 
+@traced("planner")
 async def planner(state: dict) -> dict:
     """规划：把问题拆解为工具调用步骤。只暴露调用方有权使用的工具。"""
     budget: Budget = state.get("budget") or Budget()
@@ -311,7 +354,7 @@ async def planner(state: dict) -> dict:
                     for i, s in enumerate(raw)
                     if s.get("tool")
                 ]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("LLM 规划失败，回落启发式计划: %s", exc)
 
     if not plan:
@@ -326,6 +369,7 @@ async def planner(state: dict) -> dict:
     }
 
 
+@traced("executor")
 async def executor(state: dict) -> dict:
     """执行：只读步骤并发执行；写操作挂起等待审批。
 
@@ -338,7 +382,7 @@ async def executor(state: dict) -> dict:
     calls: list[ToolCallRecord] = list(state.get("tool_calls") or [])
     audit: list[AuditEntry] = list(state.get("audit") or [])
     trace: list[dict] = list(state.get("trace") or [])
-    pending: Optional[PendingApproval] = state.get("pending_approval")
+    pending: PendingApproval | None = state.get("pending_approval")
 
     # 分支 1：审批已通过 → 真正执行写操作
     if pending is not None and state.get("approval_decision") is True:
@@ -355,6 +399,7 @@ async def executor(state: dict) -> dict:
                 idempotency_key=pending.idempotency_key,
             )
         )
+        metrics.record_approval("execute_approved")
         budget.consume_step()
         return {
             "tool_calls": calls,
@@ -370,6 +415,7 @@ async def executor(state: dict) -> dict:
         audit.append(
             _audit(state, "tool_rejected", tool=pending.tool, args=pending.args, approved=False)
         )
+        metrics.record_approval("execute_rejected")
         return {
             "audit": audit,
             "pending_approval": None,
@@ -399,6 +445,7 @@ async def executor(state: dict) -> dict:
             audit.append(
                 _audit(state, "tool_denied", tool=step.tool, args=step.args, outcome="denied")
             )
+            metrics.record_tool_denied(step.tool)
             continue
         if spec.requires_approval:
             write_steps.append(step)
@@ -408,6 +455,7 @@ async def executor(state: dict) -> dict:
     async def _do_read(step: PlanStep) -> ToolCallRecord:
         # 护栏：预算耗尽 → 强制收敛
         if budget.exhausted:
+            metrics.record_guardrail(f"budget_{budget.exhausted_reason}")
             return ToolCallRecord(
                 step_id=step.step_id,
                 tool=step.tool,
@@ -416,6 +464,7 @@ async def executor(state: dict) -> dict:
             )
         # 护栏：循环检测
         if budget.is_repeating(step.tool, step.args):
+            metrics.record_guardrail("loop_detected")
             return ToolCallRecord(
                 step_id=step.step_id,
                 tool=step.tool,
@@ -451,6 +500,7 @@ async def executor(state: dict) -> dict:
                 idempotency_key=pa.idempotency_key,
             )
         )
+        metrics.record_approval("requested")
         return {
             "pending_approval": pa,
             "tool_calls": calls,
@@ -468,9 +518,10 @@ async def executor(state: dict) -> dict:
     }
 
 
+@traced("approval")
 def approval(state: dict) -> dict:
     """审批门：决定写操作是否放行（见模块顶部三级决策）。"""
-    pending: Optional[PendingApproval] = state.get("pending_approval")
+    pending: PendingApproval | None = state.get("pending_approval")
     if pending is None:
         return {"approval_decision": None}
 
@@ -489,6 +540,7 @@ def approval(state: dict) -> dict:
                 approved=True,
             )
         )
+        metrics.record_approval("auto_approved")
         return {
             "approval_decision": True,
             "audit": audit,
@@ -523,6 +575,7 @@ def approval(state: dict) -> dict:
                 approved=approved,
             )
         )
+        metrics.record_approval("human_approved" if approved else "human_rejected")
         return {
             "approval_decision": approved,
             "audit": audit,
@@ -541,9 +594,11 @@ def approval(state: dict) -> dict:
             approved=False,
         )
     )
+    metrics.record_approval("denied_default")
     return {"approval_decision": False, "audit": audit}
 
 
+@traced("reflector")
 async def reflector(state: dict) -> dict:
     """反思：判断已得信息是否足以回答；不足则触发重规划（受迭代上限约束）。"""
     iteration = int(state.get("iteration") or 0) + 1
@@ -576,7 +631,7 @@ async def reflector(state: dict) -> dict:
             if "sufficient" in parsed:
                 sufficient = bool(parsed["sufficient"])
                 reason = str(parsed.get("reason", "")) or reason
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("LLM 反思失败，沿用启发式判断: %s", exc)
 
     return {
@@ -634,11 +689,12 @@ def _fallback_answer(state: dict) -> str:
     return "\n".join(lines)
 
 
+@traced("responder")
 async def responder(state: dict) -> dict:
     """应答：汇总工具结果生成最终答案，附带引用与执行轨迹。"""
     budget: Budget = state.get("budget") or Budget()
     citations = _build_citations(state.get("tool_calls") or [])
-    pending: Optional[PendingApproval] = state.get("pending_approval")
+    pending: PendingApproval | None = state.get("pending_approval")
 
     if pending is not None:
         answer = (
@@ -667,7 +723,7 @@ async def responder(state: dict) -> dict:
         )
         answer = (resp.content or "").strip()
         budget.consume_tokens(resp.tokens)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("LLM 应答失败，降级为检索直答: %s", exc)
 
     if not answer:
